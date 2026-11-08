@@ -882,7 +882,7 @@
               <span>金额（元）</span>
               <span id="calcPreviewSpan" style="color:#0f766e;font-weight:700;">${/[+\-]/.test(String(f.amount)) && !isNaN(numAmt) ? '= ¥' + fm(numAmt, false) : ''}</span>
             </label>
-            <input type="text" inputmode="decimal" placeholder="0.00" class="form-input amount-input" id="txAmountInput" value="${f.amount}" />
+            <input type="text" inputmode="decimal" placeholder="0" class="form-input amount-input" id="txAmountInput" value="${f.amount}" />
             <div class="calc-ops-bar">
               <button type="button" class="calc-op-btn" data-calcop="+">＋加</button>
               <button type="button" class="calc-op-btn" data-calcop="-">－减</button>
@@ -1542,7 +1542,7 @@
       btn.onclick = () => {
         const m = btn.dataset.member;
         const mAlloc = report.currentAllocation[m];
-        const stillNeed = mAlloc && mAlloc.goldenEggStillNeed ? Engine.round2(mAlloc.goldenEggStillNeed) : 0;
+        const stillNeed = mAlloc && mAlloc.goldenEggStillNeed ? Math.round(mAlloc.goldenEggStillNeed) : 0;
         const defaultAmt = stillNeed > 0 ? stillNeed : 2000;
         const val = prompt(
           `⚡ 一键记入【${m.toUpperCase()} 本期金蛋存入】\n本期应存合计: ¥${fm(mAlloc.goldenEggTotal)}\n当前还需存入: ¥${fm(stillNeed)}\n请输入本次实际存入金额（元）：`,

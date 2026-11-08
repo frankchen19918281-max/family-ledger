@@ -162,10 +162,10 @@
 
   function formatMoney(n, showEmptyAsDash = true) {
     if (n === null || n === undefined || n === '' || isNaN(n)) {
-      return showEmptyAsDash ? '--' : '0.00';
+      return showEmptyAsDash ? '--' : '0';
     }
-    const num = Number(n);
-    return num.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const num = Math.round(Number(n));
+    return num.toLocaleString('zh-CN', { minimumFractionDigits: 0, maximumFractionDigits: 0 });
   }
 
   /**
