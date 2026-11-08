@@ -822,4 +822,69 @@ body {
   border-radius: 999px;
 }
 
+.legend-row {
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: 8px;
+  transition: background 0.15s;
+}
+
+.legend-row:hover,
+.legend-row.active {
+  background: #ccfbf1;
+}
+
+.quick-date-btns {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.quick-date-btn {
+  flex: 1;
+  background: #f1f5f9;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  padding: 4px 0;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-sub);
+  cursor: pointer;
+}
+
+.quick-date-btn:active {
+  background: var(--primary-light);
+  color: var(--primary-dark);
+}
+
+.search-bar-wrap {
+  position: relative;
+  margin-bottom: 12px;
+}
+
+.search-input {
+  width: 100%;
+  padding: 9px 12px 9px 32px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-size: 13px;
+  background: #f8fafc;
+  outline: none;
+}
+
+.search-input:focus {
+  background: #fff;
+  border-color: var(--primary);
+}
+
+.search-icon {
+  position: absolute;
+  left: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+
 

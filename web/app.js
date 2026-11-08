@@ -4,8 +4,49 @@
 (function () {
   const STORAGE_KEY = 'FAMILY_ACCOUNTING_DATA_2026_V1';
   const CLOUD_CFG_KEY = 'FAMILY_ACCOUNTING_CLOUD_CFG_V3';
+  const PREF_ROLE_KEY = 'FAMILY_ACCOUNTING_PREF_ROLE_V1';
   const Engine = window.FamilyFinanceEngine;
   const fm = Engine.formatMoney;
+
+  function getTodayStr() {
+    const d = new Date();
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  }
+
+  function getRelativeDateStr(offsetDays) {
+    const d = new Date();
+    d.setDate(d.getDate() + offsetDays);
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  }
+
+  // 支持输入简易加减法公式，例如 "25+18.5" -> 43.5
+  function evalMathAmount(expr) {
+    if (expr === null || expr === undefined) return NaN;
+    const str = String(expr).replace(/\s+/g, '');
+    if (!str) return NaN;
+    if (/^[0-9.]+$/.test(str)) return Number(str);
+    if (!/^[0-9.+\-]+$/.test(str)) return NaN;
+    const tokens = str.match(/[+\-]?[0-9.]+/g);
+    if (!tokens) return NaN;
+    const sum = tokens.reduce((acc, t) => acc + Number(t), 0);
+    return Math.round((sum + Number.EPSILON) * 100) / 100;
+  }
+
+  function calcPeriodRemainingDays(endDateStr) {
+    const todayStr = getTodayStr();
+    const t0 = new Date(todayStr + 'T00:00:00');
+    const tEnd = new Date(endDateStr + 'T00:00:00');
+    const diff = Math.floor((tEnd - t0) / 86400000) + 1;
+    if (diff <= 0) return 1;
+    if (diff > 31) return 30;
+    return diff;
+  }
 
   // 夫妻密码加密保险箱（密码为 cq2026，源代码无任何明文 Token，外人无密码无法进入也无法算出密钥）
   const VAULT_SALT = 'family_ledger_2026_salt_v1';
@@ -77,21 +118,23 @@
     return saved;
   }
 
+  const savedPrefRole = localStorage.getItem(PREF_ROLE_KEY) || 'c';
+
   // 应用状态
   const state = {
     data: loadLocalData(),
     cloudCfg: loadCloudConfig(),
     currentTab: 'dashboard', // dashboard | add | ledger | dengbao | budget
     activePeriod: '2026-10',
-    // 记一笔状态
+    // 记一笔状态（自动记住本机默认角色 + 默认今天日期）
     addForm: {
-      role: 'c', // c | q | dengbao
-      date: '2026-11-01',
+      role: savedPrefRole, // c | q | dengbao
+      date: getTodayStr(),
       amount: '',
       type: '支出',
       purpose: '日常',
-      payer: 'q',
-      category: '餐饮外卖',
+      payer: savedPrefRole === 'q' ? 'q' : 'c',
+      category: savedPrefRole === 'dengbao' ? '孩子用品' : '餐饮外卖',
       note: '',
       editingId: null,
       editingRole: null
@@ -101,7 +144,9 @@
       role: 'all', // all | c | q | dengbao
       purpose: 'all', // all | 日常 | 必要开支 | 许愿池 | 工资 | 金蛋 | 孩子
       onlyCurrentPeriod: true,
-      chartDim: 'category' // category | purpose | member
+      chartDim: 'category', // category | purpose | member
+      searchKeyword: '',
+      selectedChartItem: ''
     },
     // 预算/同步页子Tab
     budgetSubTab: 'necessary', // necessary | wish | yearend | sync
@@ -421,6 +466,9 @@
     const alloc = report.currentAllocation;
     const track = report.annualTracking;
     const annSum = report.annualSummary;
+    const remDays = calcPeriodRemainingDays(report.periodRange.endDate);
+    const cPerDay = alloc.c.remainingPocket !== null ? Math.max(0, alloc.c.remainingPocket / remDays) : null;
+    const qPerDay = alloc.q.remainingPocket !== null ? Math.max(0, alloc.q.remainingPocket / remDays) : null;
 
     const statusBadge = (level, text) => {
       const map = { ok: 'badge-ok', warn: 'badge-warn', danger: 'badge-danger', info: 'badge-info' };
@@ -432,7 +480,7 @@
       <section class="pocket-hero">
         <div class="pocket-hero-top">
           <div>
-            <div class="pocket-total-label">本期家庭剩余零花钱 (${report.periodRange.startDate} ~ ${report.periodRange.endDate})</div>
+            <div class="pocket-total-label">本期家庭剩余零花钱 (${report.periodRange.startDate} ~ ${report.periodRange.endDate} · 剩${remDays}天)</div>
             <div class="pocket-total-val">¥ ${fm(alloc.family.remainingPocket)}</div>
           </div>
           <button class="btn-secondary" style="background:rgba(255,255,255,0.14);color:#fff;border:none;" data-action="quickAdd">
@@ -447,8 +495,8 @@
             </div>
             <div class="pocket-person-val">¥ ${fm(alloc.c.remainingPocket)}</div>
             <div class="pocket-person-meta">
-              本期日常已花: ¥${fm(alloc.c.dailyNetSpent, false)}<br/>
-              上期结余滚存: ¥${fm(alloc.c.prevBalance)}
+              📅 日均可用: <strong style="color:#38bdf8;">¥${fm(cPerDay)}/天</strong><br/>
+              本期已花: ¥${fm(alloc.c.dailyNetSpent, false)} | 上期滚存: ¥${fm(alloc.c.prevBalance)}
             </div>
           </div>
           <div class="pocket-person-box">
@@ -458,8 +506,8 @@
             </div>
             <div class="pocket-person-val">¥ ${fm(alloc.q.remainingPocket)}</div>
             <div class="pocket-person-meta">
-              本期日常已花: ¥${fm(alloc.q.dailyNetSpent, false)}<br/>
-              上期结余滚存: ¥${fm(alloc.q.prevBalance)}
+              📅 日均可用: <strong style="color:#f472b6;">¥${fm(qPerDay)}/天</strong><br/>
+              本期已花: ¥${fm(alloc.q.dailyNetSpent, false)} | 上期滚存: ¥${fm(alloc.q.prevBalance)}
             </div>
           </div>
         </div>
@@ -546,8 +594,14 @@
       <!-- 本期实际消费与实际存入 -->
       <section class="card">
         <div class="card-header">
-          <div class="card-title">🧾 本期实际消费 & 储蓄打卡</div>
-          <div class="card-subtitle">噔宝消费按付款人计入必要开支</div>
+          <div>
+            <div class="card-title">🧾 本期实际消费 & 储蓄打卡</div>
+            <div class="card-subtitle">噔宝消费按付款人计入必要开支</div>
+          </div>
+          <div style="display:flex;gap:6px;">
+            <button class="btn-secondary" style="font-size:11px;padding:5px 8px;" data-action="quickDepositGolden" data-member="c">⚡ c金蛋打卡</button>
+            <button class="btn-secondary" style="font-size:11px;padding:5px 8px;" data-action="quickDepositGolden" data-member="q">⚡ q金蛋打卡</button>
+          </div>
         </div>
         <table class="data-table">
           <thead>
@@ -735,7 +789,7 @@
 
     // 实时预览本笔后剩余年度额度
     let quotaPreviewHtml = '';
-    const numAmt = Number(f.amount) || 0;
+    const numAmt = evalMathAmount(f.amount) || 0;
     if (!isDengbao && (f.type === '支出' || f.type === '退款') && (f.purpose === '必要开支' || f.purpose === '许愿池')) {
       const memberTrack = report.annualTracking[f.role];
       const curRem = f.purpose === '必要开支' ? memberTrack.necRemaining : memberTrack.wishRemaining;
@@ -817,10 +871,15 @@
           <div class="form-group">
             <label class="form-label">发生日期</label>
             <input type="date" class="form-input" id="txDateInput" value="${f.date}" />
+            <div class="quick-date-btns">
+              <button type="button" class="quick-date-btn" data-qdate="0">今天</button>
+              <button type="button" class="quick-date-btn" data-qdate="-1">昨天</button>
+              <button type="button" class="quick-date-btn" data-qdate="-2">前天</button>
+            </div>
           </div>
           <div class="form-group">
-            <label class="form-label">金额（元）</label>
-            <input type="number" step="0.01" min="0" placeholder="0.00" class="form-input amount-input" id="txAmountInput" value="${f.amount}" />
+            <label class="form-label">金额（支持如 25+18.5）</label>
+            <input type="text" inputmode="decimal" placeholder="0.00 或 25+18" class="form-input amount-input" id="txAmountInput" value="${f.amount}" />
           </div>
         </div>
 
@@ -914,12 +973,13 @@
             .map(([name, val], idx) => {
               const pct = ((val / totalNet) * 100).toFixed(1);
               const color = palette[idx % palette.length];
+              const isSelected = state.ledgerFilter.selectedChartItem === name;
               return `
-                <div class="legend-row">
+                <div class="legend-row ${isSelected ? 'active' : ''}" data-chart-item="${name}" title="点击筛选该项明细">
                   <div class="legend-top">
                     <span class="legend-name">
                       <span class="legend-dot" style="background:${color}"></span>
-                      <span>${name}</span>
+                      <span>${name} ${isSelected ? '✓' : ''}</span>
                     </span>
                     <span class="legend-val">¥${fm(val, false)} (${pct}%)</span>
                   </div>
@@ -968,7 +1028,7 @@
       ...report.transactions.dengbao
     ];
 
-    const filtered = allList
+    const baseFiltered = allList
       .filter((tx) => {
         if (lf.onlyCurrentPeriod && tx.periodKey !== state.activePeriod) return false;
         if (lf.role !== 'all' && tx.member !== lf.role) return false;
@@ -979,23 +1039,45 @@
             return false;
           }
         }
+        if (lf.searchKeyword && lf.searchKeyword.trim()) {
+          const kw = lf.searchKeyword.trim().toLowerCase();
+          const hay = `${tx.category || ''} ${tx.purpose || ''} ${tx.note || ''} ${tx.amount || ''} ${tx.date || ''}`.toLowerCase();
+          if (!hay.includes(kw)) return false;
+        }
         return true;
       })
       .sort((a, b) => (b.date || '').localeCompare(a.date || ''));
 
-    const chartHtml = buildExpenseChartHtml(filtered, lf.chartDim || 'category');
+    const chartHtml = buildExpenseChartHtml(baseFiltered, lf.chartDim || 'category');
+
+    // 如果点击了图表中的某一项，下方列表进一步过滤
+    const filtered = lf.selectedChartItem
+      ? baseFiltered.filter((tx) => {
+          const dim = lf.chartDim || 'category';
+          let key = '';
+          if (dim === 'category') key = tx.category || (tx.member === 'dengbao' ? '孩子用品' : tx.purpose || '其他');
+          else if (dim === 'purpose') key = tx.member === 'dengbao' ? '👶 噔宝支出' : tx.purpose || '其他';
+          else key = tx.member === 'dengbao' ? `👶 噔宝(${tx.payer}付)` : tx.member === 'c' ? '👦 c（你）' : '👧 q（她）';
+          return key === lf.selectedChartItem;
+        })
+      : baseFiltered;
 
     return `
       <section class="card">
         <div class="card-header">
           <div>
             <div class="card-title">📊 账单流水明细 (${filtered.length}笔)</div>
-            <div class="card-subtitle">点击任意记录可编辑或删除</div>
+            <div class="card-subtitle">点击图表分类可联动过滤，点击记录可编辑</div>
           </div>
           <label style="font-size:12px;display:flex;align-items:center;gap:4px;cursor:pointer;">
             <input type="checkbox" id="toggleOnlyPeriod" ${lf.onlyCurrentPeriod ? 'checked' : ''} />
             仅看当前账期
           </label>
+        </div>
+
+        <div class="search-bar-wrap">
+          <span class="search-icon">🔍</span>
+          <input type="text" class="search-input" id="ledgerSearchInput" placeholder="搜索分类、备注、金额或日期..." value="${lf.searchKeyword || ''}" />
         </div>
 
         <div class="segmented">
@@ -1391,8 +1473,11 @@
           <hr style="border:none;border-top:1px dashed #e2e8f0;margin:14px 0;" />
 
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px;">
-            <button class="btn-secondary" data-action="exportJson">📤 导出 JSON 账本备份</button>
-            <button class="btn-secondary" data-action="importJson">📥 导入 JSON 账本恢复</button>
+            <button class="btn-secondary" data-action="exportCsv">📊 导出 Excel 表格 (.csv)</button>
+            <button class="btn-secondary" data-action="exportJson">📤 导出 JSON 完整备份</button>
+          </div>
+          <div style="margin-top:10px;">
+            <button class="btn-secondary" style="width:100%;" data-action="importJson">📥 导入 JSON 账本恢复</button>
           </div>
           <div style="margin-top:12px;">
             <button class="btn-danger-sm" style="width:100%;padding:10px;font-weight:600;" data-action="resetInitial">
@@ -1436,9 +1521,42 @@
     main.querySelectorAll('[data-action="quickAdd"]').forEach((btn) => {
       btn.onclick = () => {
         state.currentTab = 'add';
-        state.addForm.role = 'c';
+        state.addForm.role = localStorage.getItem(PREF_ROLE_KEY) || 'c';
+        state.addForm.date = getTodayStr();
         updateTabBarUI();
         render();
+      };
+    });
+
+    // 发薪后一键金蛋打卡存入
+    main.querySelectorAll('[data-action="quickDepositGolden"]').forEach((btn) => {
+      btn.onclick = () => {
+        const m = btn.dataset.member;
+        const mAlloc = report.currentAllocation[m];
+        const stillNeed = mAlloc && mAlloc.goldenEggStillNeed ? Engine.round2(mAlloc.goldenEggStillNeed) : 0;
+        const defaultAmt = stillNeed > 0 ? stillNeed : 2000;
+        const val = prompt(
+          `⚡ 一键记入【${m.toUpperCase()} 本期金蛋存入】\n本期应存合计: ¥${fm(mAlloc.goldenEggTotal)}\n当前还需存入: ¥${fm(stillNeed)}\n请输入本次实际存入金额（元）：`,
+          defaultAmt
+        );
+        if (val === null || val.trim() === '') return;
+        const num = evalMathAmount(val);
+        if (isNaN(num) || num <= 0) {
+          alert('请输入有效的正数金额');
+          return;
+        }
+        state.data.transactions[m].push({
+          id: 'tx_' + Date.now(),
+          date: report.periodRange.startDate,
+          amount: num,
+          type: '存入',
+          purpose: '金蛋',
+          category: '预算结余转存',
+          note: `${state.activePeriod}账期金蛋存入打卡`
+        });
+        saveData();
+        render();
+        showToast(`🥚 已记入 ${m.toUpperCase()} 金蛋存入 ¥${fm(num, false)}`);
       };
     });
 
@@ -1486,11 +1604,20 @@
     main.querySelectorAll('[data-role]').forEach((btn) => {
       btn.onclick = () => {
         state.addForm.role = btn.dataset.role;
+        localStorage.setItem(PREF_ROLE_KEY, state.addForm.role);
         if (state.addForm.role === 'dengbao') {
           state.addForm.category = '孩子用品';
         } else if (state.addForm.category === '孩子用品') {
           state.addForm.category = '餐饮外卖';
         }
+        render();
+      };
+    });
+
+    main.querySelectorAll('[data-qdate]').forEach((btn) => {
+      btn.onclick = () => {
+        const offset = parseInt(btn.dataset.qdate, 10) || 0;
+        state.addForm.date = getRelativeDateStr(offset);
         render();
       };
     });
@@ -1549,6 +1676,16 @@
       amtInp.oninput = (e) => {
         state.addForm.amount = e.target.value;
       };
+      amtInp.onblur = (e) => {
+        const val = e.target.value;
+        if (val && /[+\-]/.test(val)) {
+          const calc = evalMathAmount(val);
+          if (!isNaN(calc) && calc >= 0) {
+            state.addForm.amount = String(calc);
+            render();
+          }
+        }
+      };
     }
 
     const noteInp = document.getElementById('txNoteInput');
@@ -1587,7 +1724,7 @@
     if (submitBtn) {
       submitBtn.onclick = () => {
         const f = state.addForm;
-        const numAmt = Number(f.amount);
+        const numAmt = evalMathAmount(f.amount);
         if (!f.date || f.amount === '' || isNaN(numAmt) || numAmt < 0) {
           alert('请填写有效的日期与金额！');
           return;
@@ -1680,9 +1817,35 @@
     main.querySelectorAll('[data-cdim]').forEach((btn) => {
       btn.onclick = () => {
         state.ledgerFilter.chartDim = btn.dataset.cdim;
+        state.ledgerFilter.selectedChartItem = '';
         render();
       };
     });
+
+    main.querySelectorAll('[data-chart-item]').forEach((row) => {
+      row.onclick = () => {
+        const item = row.dataset.chartItem;
+        if (state.ledgerFilter.selectedChartItem === item) {
+          state.ledgerFilter.selectedChartItem = '';
+        } else {
+          state.ledgerFilter.selectedChartItem = item;
+        }
+        render();
+      };
+    });
+
+    const searchInp = document.getElementById('ledgerSearchInput');
+    if (searchInp) {
+      searchInp.oninput = (e) => {
+        state.ledgerFilter.searchKeyword = e.target.value;
+        render();
+        const newInp = document.getElementById('ledgerSearchInput');
+        if (newInp) {
+          newInp.focus();
+          newInp.setSelectionRange(newInp.value.length, newInp.value.length);
+        }
+      };
+    }
 
     main.querySelectorAll('[data-del-id]').forEach((btn) => {
       btn.onclick = () => {
@@ -1921,6 +2084,35 @@
         await pushToServer();
         render();
         showToast(`已切换至家庭房间: ${state.data.familyCode}`);
+      };
+    });
+
+    main.querySelectorAll('[data-action="exportCsv"]').forEach((btn) => {
+      btn.onclick = () => {
+        const rows = [['账本', '日期', '所属账期', '金额(元)', '收支类型', '用途/付款人', '分类标签', '备注说明']];
+        const allTx = [
+          ...report.transactions.c.map((t) => ['c记账', t.date, t.periodKey, t.amount, t.type, t.purpose, t.category || '', t.note || '']),
+          ...report.transactions.q.map((t) => ['q记账', t.date, t.periodKey, t.amount, t.type, t.purpose, t.category || '', t.note || '']),
+          ...report.transactions.dengbao.map((t) => ['噔宝支出', t.date, t.periodKey, t.amount, t.type, `${t.payer}付款`, t.category || '', t.note || ''])
+        ];
+        allTx.forEach((r) => rows.push(r));
+        const csvContent =
+          '\uFEFF' +
+          rows
+            .map((r) =>
+              r
+                .map((cell) => `"${String(cell ?? '').replace(/"/g, '""')}"`)
+                .join(',')
+            )
+            .join('\r\n');
+        const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `2026-2027家庭共同记账流水_${state.activePeriod}.csv`;
+        a.click();
+        URL.revokeObjectURL(url);
+        showToast('📊 已导出 Excel (.csv) 表格文件');
       };
     });
 
