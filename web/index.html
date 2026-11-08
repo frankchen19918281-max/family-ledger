@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="家庭记账" />
+  <meta name="theme-color" content="#0f766e" />
+  <link rel="manifest" href="./manifest.json" />
+  <title>2026-2027 家庭共同记账</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <!-- Top Header -->
+    <header class="top-bar">
+      <div class="top-bar-row">
+        <div class="app-title">
+          <span>🏡 家庭共同记账</span>
+          <span style="font-size:11px;font-weight:500;opacity:0.85;">c & q · 2026-2027</span>
+        </div>
+        <div class="sync-pill" id="syncStatusBtn" title="点击配置双人云同步">
+          <span class="sync-dot" id="syncDot"></span>
+          <span id="syncText">房间: cq2026</span>
+        </div>
+      </div>
+      <!-- Period Switcher -->
+      <div class="period-bar">
+        <button class="period-btn" id="prevPeriodBtn" title="上一账期">‹</button>
+        <div class="period-select-wrap">
+          <select class="period-select" id="periodSelect"></select>
+        </div>
+        <button class="period-btn" id="nextPeriodBtn" title="下一账期">›</button>
+      </div>
+    </header>
+
+    <!-- Dynamic Main View -->
+    <main class="main-content" id="mainView"></main>
+
+    <!-- Bottom Navigation TabBar -->
+    <nav class="tab-bar">
+      <button class="tab-item active" data-tab="dashboard">
+        <span class="tab-icon">🏠</span>
+        <span>家庭看板</span>
+      </button>
+      <button class="tab-item" data-tab="add">
+        <span class="tab-icon">✍️</span>
+        <span>记一笔</span>
+      </button>
+      <button class="tab-item" data-tab="ledger">
+        <span class="tab-icon">📊</span>
+        <span>流水明细</span>
+      </button>
+      <button class="tab-item" data-tab="dengbao">
+        <span class="tab-icon">👶</span>
+        <span>噔宝专区</span>
+      </button>
+      <button class="tab-item" data-tab="budget">
+        <span class="tab-icon">🎯</span>
+        <span>预算/同步</span>
+      </button>
+    </nav>
+  </div>
+
+  <div class="toast" id="toastEl"></div>
+
+  <!-- 夫妻私密安全锁屏 -->
+  <div class="lock-overlay hidden" id="lockOverlay">
+    <div class="lock-card">
+      <div class="lock-icon">🔒</div>
+      <div class="lock-title">家庭私密账本锁</div>
+      <div class="lock-sub">请输入 c & q 夫妻专属密码解锁<br/>（首次解锁后将自动记住在本机）</div>
+      <input type="password" class="lock-input" id="unlockPinInput" placeholder="请输入解锁密码" autocomplete="off" />
+      <button type="button" class="btn-primary" id="unlockSubmitBtn">🔓 解锁进入账本</button>
+    </div>
+  </div>
+
+  <script src="../shared/engine.js"></script>
+  <script src="./app.js"></script>
+</body>
+</html>

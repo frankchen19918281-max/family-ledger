@@ -1,0 +1,14 @@
+{
+  "pages": [
+    "pages/index/index"
+  ],
+  "window": {
+    "backgroundTextStyle": "light",
+    "navigationBarBackgroundColor": "#0f766e",
+    "navigationBarTitleText": "🏡 家庭共同记账 (c & q)",
+    "navigationBarTextStyle": "white",
+    "backgroundColor": "#f4f6f9"
+  },
+  "style": "v2",
+  "sitemapLocation": "sitemap.json"
+}

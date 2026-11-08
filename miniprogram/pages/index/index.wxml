@@ -1,0 +1,351 @@
+<!-- 顶部账期栏 -->
+<view class="top-header">
+  <view class="header-row">
+    <text class="header-title">🏡 家庭共同记账 · c & q</text>
+    <view class="sync-badge" bindtap="switchTab" data-tab="budget">
+      <text class="dot {{syncOnline ? 'online' : ''}}"></text>
+      <text>口令: {{familyCode}}</text>
+    </view>
+  </view>
+  <view class="period-switcher">
+    <view class="p-btn" bindtap="stepPeriod" data-delta="-1">‹ 上期</view>
+    <picker mode="selector" range="{{periodOptions}}" range-key="label" value="{{periodIndex}}" bindchange="onPeriodPickerChange">
+      <view class="p-current">{{view.periodLabel}} ▾</view>
+    </picker>
+    <view class="p-btn" bindtap="stepPeriod" data-delta="1">下期 ›</view>
+  </view>
+</view>
+
+<!-- 1. 家庭看板 Tab -->
+<block wx:if="{{currentTab === 'dashboard'}}">
+  <view class="hero-card">
+    <view class="hero-top">
+      <view>
+        <view class="hero-label">本期家庭剩余零花钱 ({{view.startDate}} ~ {{view.endDate}})</view>
+        <view class="hero-total">¥ {{view.familyPocket}}</view>
+      </view>
+      <view class="quick-btn" bindtap="switchTab" data-tab="add">+ 记一笔</view>
+    </view>
+    <view class="person-grid">
+      <view class="person-box">
+        <view class="person-head">👦 c（你）剩余零花</view>
+        <view class="person-val">¥ {{view.cPocket}}</view>
+        <view class="person-sub">daily: ¥{{view.cDaily}} | 已花: ¥{{view.cDailySpent}}</view>
+      </view>
+      <view class="person-box">
+        <view class="person-head">👧 q（她）剩余零花</view>
+        <view class="person-val">¥ {{view.qPocket}}</view>
+        <view class="person-sub">daily: ¥{{view.qDaily}} | 已花: ¥{{view.qDailySpent}}</view>
+      </view>
+    </view>
+  </view>
+
+  <!-- 本期工资分配明细 -->
+  <view class="card">
+    <view class="card-title">💰 本期工资分配明细</view>
+    <view class="card-sub">金蛋=(工资-必要月均)×50% · 另需转存=金蛋补足+许愿池月均</view>
+    <view class="table-row th">
+      <text class="col-name">项目</text>
+      <text class="col-val">c（你）</text>
+      <text class="col-val">q（她）</text>
+      <text class="col-val">合计</text>
+    </view>
+    <view class="table-row">
+      <text class="col-name">工资收入</text>
+      <text class="col-val">{{view.cSalary}}</text>
+      <text class="col-val">{{view.qSalary}}</text>
+      <text class="col-val bold">{{view.famSalary}}</text>
+    </view>
+    <view class="table-row">
+      <text class="col-name">月均必要开支</text>
+      <text class="col-val">{{view.cNecMon}}</text>
+      <text class="col-val">{{view.qNecMon}}</text>
+      <text class="col-val">{{view.famNecMon}}</text>
+    </view>
+    <view class="table-row">
+      <text class="col-name">金蛋固定部分</text>
+      <text class="col-val">{{view.cGoldFixed}}</text>
+      <text class="col-val">{{view.qGoldFixed}}</text>
+      <text class="col-val">{{view.famGoldFixed}}</text>
+    </view>
+    <view class="table-row">
+      <text class="col-name">金蛋补足部分</text>
+      <text class="col-val">{{view.cGoldSup}}</text>
+      <text class="col-val">{{view.qGoldSup}}</text>
+      <text class="col-val">{{view.famGoldSup}}</text>
+    </view>
+    <view class="table-row highlight">
+      <text class="col-name">🥚 金蛋应存合计</text>
+      <text class="col-val">{{view.cGoldTotal}}</text>
+      <text class="col-val">{{view.qGoldTotal}}</text>
+      <text class="col-val">{{view.famGoldTotal}}</text>
+    </view>
+    <view class="table-row">
+      <text class="col-name">✨ 许愿池月均</text>
+      <text class="col-val">{{view.cWishMon}}</text>
+      <text class="col-val">{{view.qWishMon}}</text>
+      <text class="col-val">{{view.famWishMon}}</text>
+    </view>
+    <view class="table-row accent">
+      <text class="col-name">👛 daily 零花钱</text>
+      <text class="col-val">{{view.cDaily}}</text>
+      <text class="col-val">{{view.qDaily}}</text>
+      <text class="col-val">{{view.famDaily}}</text>
+    </view>
+    <view class="table-row highlight">
+      <text class="col-name">🏦 另需转存</text>
+      <text class="col-val">{{view.cExtraTrans}}</text>
+      <text class="col-val">{{view.qExtraTrans}}</text>
+      <text class="col-val">{{view.famExtraTrans}}</text>
+    </view>
+  </view>
+
+  <!-- 本期实际消费 -->
+  <view class="card">
+    <view class="card-title">🧾 本期实际消费汇总</view>
+    <view class="card-sub">噔宝消费按付款人计入必要开支</view>
+    <view class="table-row th">
+      <text class="col-name">消费类别</text>
+      <text class="col-val">c（你）</text>
+      <text class="col-val">q（她）</text>
+      <text class="col-val">合计</text>
+    </view>
+    <view class="table-row">
+      <text class="col-name">日常净消费</text>
+      <text class="col-val">{{view.cDailySpent}}</text>
+      <text class="col-val">{{view.qDailySpent}}</text>
+      <text class="col-val">{{view.famNecSpent ? '' : ''}}</text>
+    </view>
+    <view class="table-row">
+      <text class="col-name">必要开支(含噔宝)</text>
+      <text class="col-val">{{view.cNecSpent}}</text>
+      <text class="col-val">{{view.qNecSpent}}</text>
+      <text class="col-val">{{view.famNecSpent}}</text>
+    </view>
+    <view class="table-row">
+      <text class="col-name">许愿池净消费</text>
+      <text class="col-val">{{view.cWishSpent}}</text>
+      <text class="col-val">{{view.qWishSpent}}</text>
+      <text class="col-val">{{view.famWishSpent}}</text>
+    </view>
+    <view class="table-row highlight">
+      <text class="col-name">🔥 本期消费合计</text>
+      <text class="col-val">{{view.cTotalSpent}}</text>
+      <text class="col-val">{{view.qTotalSpent}}</text>
+      <text class="col-val">{{view.famTotalSpent}}</text>
+    </view>
+  </view>
+
+  <!-- 年度预算跟踪 -->
+  <view class="card">
+    <view class="card-title">🎯 {{view.budgetYear}}年度预算跟踪 (80%预警)</view>
+    <view class="prog-item">
+      <view class="prog-head">
+        <text>c 必要开支 ({{view.cNecPct}}%)</text>
+        <text class="badge badge-info">{{view.cNecStatus}}</text>
+      </view>
+      <progress percent="{{view.cNecPct}}" stroke-width="8" border-radius="6" activeColor="#0d9488" />
+      <view class="prog-sub">已用 ¥{{view.cNecYearSpent}} / 额度 ¥{{view.cNecQuota}} · 剩余 ¥{{view.cNecRem}}</view>
+    </view>
+    <view class="prog-item">
+      <view class="prog-head">
+        <text>q 必要开支 ({{view.qNecPct}}%)</text>
+        <text class="badge badge-info">{{view.qNecStatus}}</text>
+      </view>
+      <progress percent="{{view.qNecPct}}" stroke-width="8" border-radius="6" activeColor="#db2777" />
+      <view class="prog-sub">已用 ¥{{view.qNecYearSpent}} / 额度 ¥{{view.qNecQuota}} · 剩余 ¥{{view.qNecRem}}</view>
+    </view>
+    <view class="prog-item">
+      <view class="prog-head">
+        <text>c 许愿池 ({{view.cWishPct}}%)</text>
+        <text class="badge badge-info">{{view.cWishStatus}}</text>
+      </view>
+      <progress percent="{{view.cWishPct}}" stroke-width="8" border-radius="6" activeColor="#2563eb" />
+      <view class="prog-sub">已用 ¥{{view.cWishYearSpent}} / 额度 ¥{{view.cWishQuota}} · 剩余 ¥{{view.cWishRem}}</view>
+    </view>
+    <view class="prog-item">
+      <view class="prog-head">
+        <text>q 许愿池 ({{view.qWishPct}}%)</text>
+        <text class="badge badge-info">{{view.qWishStatus}}</text>
+      </view>
+      <progress percent="{{view.qWishPct}}" stroke-width="8" border-radius="6" activeColor="#f59e0b" />
+      <view class="prog-sub">已用 ¥{{view.qWishYearSpent}} / 额度 ¥{{view.qWishQuota}} · 剩余 ¥{{view.qWishRem}}</view>
+    </view>
+  </view>
+</block>
+
+<!-- 2. 记一笔 Tab -->
+<block wx:if="{{currentTab === 'add'}}">
+  <view class="card">
+    <view class="card-title">✍️ 记一笔流水</view>
+    <view class="seg-bar">
+      <view class="seg-item {{addForm.role === 'c' ? 'active' : ''}}" bindtap="selectAddRole" data-role="c">👦 c 记账</view>
+      <view class="seg-item {{addForm.role === 'q' ? 'active' : ''}}" bindtap="selectAddRole" data-role="q">👧 q 记账</view>
+      <view class="seg-item {{addForm.role === 'dengbao' ? 'active' : ''}}" bindtap="selectAddRole" data-role="dengbao">👶 噔宝支出</view>
+    </view>
+
+    <view class="form-label">收支类型</view>
+    <view class="chip-wrap">
+      <view wx:for="{{typeOptions}}" wx:key="*this" class="chip {{addForm.type === item ? 'active' : ''}}" bindtap="selectAddType" data-type="{{item}}">{{item}}</view>
+    </view>
+
+    <block wx:if="{{addForm.role === 'dengbao'}}">
+      <view class="form-label">付款人（自动计入谁的必要开支）</view>
+      <view class="seg-bar">
+        <view class="seg-item {{addForm.payer === 'c' ? 'active' : ''}}" bindtap="selectAddPayer" data-payer="c">👦 c 付款</view>
+        <view class="seg-item {{addForm.payer === 'q' ? 'active' : ''}}" bindtap="selectAddPayer" data-payer="q">👧 q 付款</view>
+      </view>
+    </block>
+    <block wx:else>
+      <view class="form-label">资金用途</view>
+      <view class="chip-wrap">
+        <view wx:for="{{purposeOptions}}" wx:key="*this" class="chip {{addForm.purpose === item ? 'active' : ''}}" bindtap="selectAddPurpose" data-purpose="{{item}}">{{item}}</view>
+      </view>
+    </block>
+
+    <view class="form-label">发生日期</view>
+    <picker mode="date" value="{{addForm.date}}" bindchange="onDateChange">
+      <view class="input-box">{{addForm.date}}</view>
+    </picker>
+
+    <view class="form-label">金额（元）</view>
+    <input class="input-box amount-input" type="digit" placeholder="0.00" value="{{addForm.amount}}" bindinput="onAmountInput" />
+
+    <view class="form-label">分类标签</view>
+    <view class="chip-wrap">
+      <view wx:for="{{categoryOptions}}" wx:key="*this" class="chip {{addForm.category === item ? 'active' : ''}}" bindtap="selectAddCategory" data-cat="{{item}}">{{item}}</view>
+    </view>
+
+    <view class="form-label">备注（选填）</view>
+    <input class="input-box" type="text" placeholder="添加备注..." value="{{addForm.note}}" bindinput="onNoteInput" />
+
+    <button class="submit-btn" bindtap="submitTransaction">✅ 确认记入账本</button>
+  </view>
+</block>
+
+<!-- 3. 流水明细 Tab -->
+<block wx:if="{{currentTab === 'ledger'}}">
+  <view class="card">
+    <view class="row-between">
+      <view class="card-title">📊 流水明细 ({{filteredLedger.length}}笔)</view>
+      <view class="badge badge-info" bindtap="toggleLedgerPeriod">{{ledgerFilter.onlyCurrentPeriod ? '仅当前账期' : '全部账期'}}</view>
+    </view>
+    <view class="seg-bar">
+      <view class="seg-item {{ledgerFilter.role === 'all' ? 'active' : ''}}" bindtap="selectLedgerRole" data-role="all">全部</view>
+      <view class="seg-item {{ledgerFilter.role === 'c' ? 'active' : ''}}" bindtap="selectLedgerRole" data-role="c">c 记账</view>
+      <view class="seg-item {{ledgerFilter.role === 'q' ? 'active' : ''}}" bindtap="selectLedgerRole" data-role="q">q 记账</view>
+      <view class="seg-item {{ledgerFilter.role === 'dengbao' ? 'active' : ''}}" bindtap="selectLedgerRole" data-role="dengbao">噔宝</view>
+    </view>
+    <view wx:for="{{filteredLedger}}" wx:key="id" class="tx-row">
+      <view>
+        <view class="tx-title">
+          <text>{{item.category || item.purpose || '未分类'}}</text>
+          <text class="badge badge-c">{{item.member === 'dengbao' ? '噔宝(' + item.payer + '付)' : item.member}}</text>
+          <text class="badge badge-info">{{item.type}}{{item.purpose ? '·' + item.purpose : ''}}</text>
+        </view>
+        <view class="tx-date">{{item.date}} {{item.note}}</view>
+      </view>
+      <view class="tx-right">
+        <view class="tx-amt">{{item.type === '收入' || item.type === '退款' ? '+' : '-'}}¥{{item.amountText}}</view>
+        <view wx:if="{{item.afterQuotaText}}" class="tx-quota">余下额度 ¥{{item.afterQuotaText}}</view>
+        <view class="del-link" bindtap="deleteTx" data-id="{{item.id}}" data-role="{{item.member}}">删除</view>
+      </view>
+    </view>
+  </view>
+</block>
+
+<!-- 4. 噔宝专区 Tab -->
+<block wx:if="{{currentTab === 'dengbao'}}">
+  <view class="hero-card" style="background:linear-gradient(135deg,#b45309,#d97706);">
+    <view class="hero-label">👶 噔宝当期可用结余 ({{view.startDate}} ~ {{view.endDate}})</view>
+    <view class="hero-total">¥ {{view.dbBalance}}</view>
+    <view class="person-grid">
+      <view class="person-box">
+        <view class="person-head">当月额度 ({{view.dbStatus}})</view>
+        <view class="person-val">¥ {{view.dbQuota}}</view>
+      </view>
+      <view class="person-box">
+        <view class="person-head">当月已净消费</view>
+        <view class="person-val">¥ {{view.dbSpent}}</view>
+        <view class="person-sub">c付: ¥{{view.dbCPaid}} | q付: ¥{{view.dbQPaid}}</view>
+      </view>
+    </view>
+  </view>
+</block>
+
+<!-- 5. 预算与同步 Tab -->
+<block wx:if="{{currentTab === 'budget'}}">
+  <view class="card">
+    <view class="seg-bar">
+      <view class="seg-item {{budgetSubTab === 'necessary' ? 'active' : ''}}" bindtap="selectBudgetSub" data-sub="necessary">必要开支</view>
+      <view class="seg-item {{budgetSubTab === 'wish' ? 'active' : ''}}" bindtap="selectBudgetSub" data-sub="wish">许愿池</view>
+      <view class="seg-item {{budgetSubTab === 'sync' ? 'active' : ''}}" bindtap="selectBudgetSub" data-sub="sync">双人同步</view>
+    </view>
+
+    <block wx:if="{{budgetSubTab === 'necessary'}}">
+      <view class="seg-bar">
+        <view class="seg-item {{budgetRole === 'c' ? 'active' : ''}}" bindtap="selectBudgetRole" data-role="c">👦 c 必要清单</view>
+        <view class="seg-item {{budgetRole === 'q' ? 'active' : ''}}" bindtap="selectBudgetRole" data-role="q">👧 q 必要清单</view>
+      </view>
+      <view class="table-row th">
+        <text class="col-name">项目</text>
+        <text class="col-val">年度预算</text>
+        <text class="col-val">月均预留</text>
+      </view>
+      <view wx:for="{{view.necessaryList}}" wx:key="id" class="table-row">
+        <text class="col-name">{{item.name}}</text>
+        <text class="col-val">{{item.annualBudgetText}}</text>
+        <text class="col-val">{{item.monthlyText}}</text>
+      </view>
+    </block>
+
+    <block wx:if="{{budgetSubTab === 'wish'}}">
+      <view class="seg-bar">
+        <view class="seg-item {{budgetRole === 'c' ? 'active' : ''}}" bindtap="selectBudgetRole" data-role="c">👦 c 许愿池</view>
+        <view class="seg-item {{budgetRole === 'q' ? 'active' : ''}}" bindtap="selectBudgetRole" data-role="q">👧 q 许愿池</view>
+      </view>
+      <view class="table-row th">
+        <text class="col-name">愿望</text>
+        <text class="col-val">年度额度</text>
+        <text class="col-val">月均({{item.months}}月)</text>
+      </view>
+      <view wx:for="{{view.wishList}}" wx:key="id" class="table-row">
+        <text class="col-name">{{item.name}}</text>
+        <text class="col-val">{{item.annualQuotaText}}</text>
+        <text class="col-val">{{item.monthlyText}}</text>
+      </view>
+    </block>
+
+    <block wx:if="{{budgetSubTab === 'sync'}}">
+      <view class="card-title">☁️ 双人云同步口令设置</view>
+      <view class="card-sub">c 和 q 设置相同的家庭口令即可共享同一本家庭账</view>
+      <input class="input-box" value="{{familyCode}}" bindinput="onFamilyCodeInput" />
+      <button class="submit-btn" bindtap="saveFamilyCode">保存并立即同步</button>
+      <button class="reset-btn" bindtap="resetToInitial">🔄 重置为 Excel 初始数据</button>
+    </block>
+  </view>
+</block>
+
+<!-- 底部导航栏 -->
+<view class="tabbar">
+  <view class="tab-item {{currentTab === 'dashboard' ? 'active' : ''}}" bindtap="switchTab" data-tab="dashboard">
+    <text class="tab-icon">🏠</text>
+    <text>家庭看板</text>
+  </view>
+  <view class="tab-item {{currentTab === 'add' ? 'active' : ''}}" bindtap="switchTab" data-tab="add">
+    <text class="tab-icon">✍️</text>
+    <text>记一笔</text>
+  </view>
+  <view class="tab-item {{currentTab === 'ledger' ? 'active' : ''}}" bindtap="switchTab" data-tab="ledger">
+    <text class="tab-icon">📊</text>
+    <text>流水明细</text>
+  </view>
+  <view class="tab-item {{currentTab === 'dengbao' ? 'active' : ''}}" bindtap="switchTab" data-tab="dengbao">
+    <text class="tab-icon">👶</text>
+    <text>噔宝专区</text>
+  </view>
+  <view class="tab-item {{currentTab === 'budget' ? 'active' : ''}}" bindtap="switchTab" data-tab="budget">
+    <text class="tab-icon">🎯</text>
+    <text>预算/同步</text>
+  </view>
+</view>
