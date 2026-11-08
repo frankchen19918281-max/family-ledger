@@ -878,8 +878,17 @@
             </div>
           </div>
           <div class="form-group">
-            <label class="form-label">金额（支持如 25+18.5）</label>
-            <input type="text" inputmode="decimal" placeholder="0.00 或 25+18" class="form-input amount-input" id="txAmountInput" value="${f.amount}" />
+            <label class="form-label" style="display:flex;justify-content:space-between;">
+              <span>金额（元）</span>
+              <span id="calcPreviewSpan" style="color:#0f766e;font-weight:700;">${/[+\-]/.test(String(f.amount)) && !isNaN(numAmt) ? '= ¥' + fm(numAmt, false) : ''}</span>
+            </label>
+            <input type="text" inputmode="decimal" placeholder="0.00" class="form-input amount-input" id="txAmountInput" value="${f.amount}" />
+            <div class="calc-ops-bar">
+              <button type="button" class="calc-op-btn" data-calcop="+">＋加</button>
+              <button type="button" class="calc-op-btn" data-calcop="-">－减</button>
+              <button type="button" class="calc-op-btn eq" data-calcop="=">＝等于</button>
+              <button type="button" class="calc-op-btn" data-calcop="C">清空</button>
+            </div>
           </div>
         </div>
 
@@ -1675,18 +1684,44 @@
     if (amtInp) {
       amtInp.oninput = (e) => {
         state.addForm.amount = e.target.value;
-      };
-      amtInp.onblur = (e) => {
-        const val = e.target.value;
-        if (val && /[+\-]/.test(val)) {
-          const calc = evalMathAmount(val);
-          if (!isNaN(calc) && calc >= 0) {
-            state.addForm.amount = String(calc);
-            render();
-          }
+        const previewEl = document.getElementById('calcPreviewSpan');
+        if (previewEl) {
+          const calc = evalMathAmount(state.addForm.amount);
+          previewEl.textContent =
+            /[+\-]/.test(String(state.addForm.amount)) && !isNaN(calc) ? '= ¥' + fm(calc, false) : '';
         }
       };
     }
+
+    main.querySelectorAll('[data-calcop]').forEach((btn) => {
+      btn.onclick = () => {
+        const op = btn.dataset.calcop;
+        const cur = String(state.addForm.amount || '').trim();
+        if (op === 'C') {
+          state.addForm.amount = '';
+        } else if (op === '=') {
+          const calc = evalMathAmount(cur);
+          if (!isNaN(calc) && calc >= 0) {
+            state.addForm.amount = String(calc);
+          }
+        } else if (op === '+' || op === '-') {
+          if (!cur) return;
+          if (/[+\-]$/.test(cur)) {
+            state.addForm.amount = cur.slice(0, -1) + op;
+          } else {
+            state.addForm.amount = cur + op;
+          }
+        }
+        render();
+        const newInp = document.getElementById('txAmountInput');
+        if (newInp) {
+          newInp.focus();
+          try {
+            newInp.setSelectionRange(newInp.value.length, newInp.value.length);
+          } catch (e) {}
+        }
+      };
+    });
 
     const noteInp = document.getElementById('txNoteInput');
     if (noteInp) {

@@ -857,6 +857,35 @@ body {
   color: var(--primary-dark);
 }
 
+.calc-ops-bar {
+  display: flex;
+  gap: 5px;
+  margin-top: 6px;
+}
+
+.calc-op-btn {
+  flex: 1;
+  background: #f1f5f9;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  padding: 4px 0;
+  font-size: 13px;
+  font-weight: 800;
+  color: var(--primary-dark);
+  cursor: pointer;
+}
+
+.calc-op-btn.eq {
+  background: var(--primary-light);
+  border-color: var(--primary);
+  color: var(--primary-dark);
+}
+
+.calc-op-btn:active {
+  transform: scale(0.96);
+}
+
+
 .search-bar-wrap {
   position: relative;
   margin-bottom: 12px;
