@@ -100,7 +100,8 @@
     ledgerFilter: {
       role: 'all', // all | c | q | dengbao
       purpose: 'all', // all | 日常 | 必要开支 | 许愿池 | 工资 | 金蛋 | 孩子
-      onlyCurrentPeriod: true
+      onlyCurrentPeriod: true,
+      chartDim: 'category' // category | purpose | member
     },
     // 预算/同步页子Tab
     budgetSubTab: 'necessary', // necessary | wish | yearend | sync
@@ -854,7 +855,111 @@
     `;
   }
 
-  // ==================== 3. 流水明细 (Ledger List) ====================
+  // ==================== 3. 流水明细 (Ledger List + 可视化支出比例图) ====================
+  function buildExpenseChartHtml(filtered, chartDim) {
+    const palette = ['#0d9488', '#3b82f6', '#ec4899', '#f59e0b', '#8b5cf6', '#10b981', '#ef4444', '#64748b'];
+    const groupMap = {};
+
+    filtered.forEach((tx) => {
+      if (tx.type !== '支出' && tx.type !== '退款') return;
+      const amt = Number(tx.amount) || 0;
+      const net = tx.type === '支出' ? amt : -amt;
+      let key = '';
+      if (chartDim === 'category') {
+        key = tx.category || (tx.member === 'dengbao' ? '孩子用品' : tx.purpose || '其他');
+      } else if (chartDim === 'purpose') {
+        key = tx.member === 'dengbao' ? '👶 噔宝支出' : tx.purpose || '其他';
+      } else {
+        key = tx.member === 'dengbao' ? `👶 噔宝(${tx.payer}付)` : tx.member === 'c' ? '👦 c（你）' : '👧 q（她）';
+      }
+      groupMap[key] = (groupMap[key] || 0) + net;
+    });
+
+    const entries = Object.entries(groupMap)
+      .filter(([, val]) => val > 0)
+      .sort((a, b) => b[1] - a[1]);
+
+    const totalNet = entries.reduce((acc, [, v]) => acc + v, 0);
+
+    // 若超过 6 项，前 5 项保留，其余合并为“其他汇总”
+    let displayEntries = entries;
+    if (entries.length > 6) {
+      const top5 = entries.slice(0, 5);
+      const otherSum = entries.slice(5).reduce((acc, [, v]) => acc + v, 0);
+      displayEntries = [...top5, ['其他类目合计', otherSum]];
+    }
+
+    const r = 46;
+    const circumference = 2 * Math.PI * r;
+    let accumRatio = 0;
+
+    const circlesSvg =
+      totalNet > 0
+        ? displayEntries
+            .map(([name, val], idx) => {
+              const ratio = val / totalNet;
+              const dash = ratio * circumference;
+              const gap = circumference - dash;
+              const offset = -accumRatio * circumference;
+              accumRatio += ratio;
+              const color = palette[idx % palette.length];
+              return `<circle cx="63" cy="63" r="${r}" fill="transparent" stroke="${color}" stroke-width="18" stroke-dasharray="${dash.toFixed(2)} ${gap.toFixed(2)}" stroke-dashoffset="${offset.toFixed(2)}" transform="rotate(-90 63 63)" />`;
+            })
+            .join('')
+        : `<circle cx="63" cy="63" r="${r}" fill="transparent" stroke="#e2e8f0" stroke-width="18" />`;
+
+    const legendHtml =
+      totalNet > 0
+        ? displayEntries
+            .map(([name, val], idx) => {
+              const pct = ((val / totalNet) * 100).toFixed(1);
+              const color = palette[idx % palette.length];
+              return `
+                <div class="legend-row">
+                  <div class="legend-top">
+                    <span class="legend-name">
+                      <span class="legend-dot" style="background:${color}"></span>
+                      <span>${name}</span>
+                    </span>
+                    <span class="legend-val">¥${fm(val, false)} (${pct}%)</span>
+                  </div>
+                  <div class="legend-bar-bg">
+                    <div class="legend-bar-fill" style="width:${pct}%;background:${color}"></div>
+                  </div>
+                </div>
+              `;
+            })
+            .join('')
+        : `<div style="color:#94a3b8;font-size:12px;text-align:center;padding:20px 0;">当前筛选条件下暂无净支出记录</div>`;
+
+    return `
+      <div class="chart-box">
+        <div class="chart-header">
+          <div class="chart-title">🍩 净支出构成比例</div>
+          <div class="chart-dim-tabs">
+            <button type="button" class="chart-dim-btn ${chartDim === 'category' ? 'active' : ''}" data-cdim="category">按分类</button>
+            <button type="button" class="chart-dim-btn ${chartDim === 'purpose' ? 'active' : ''}" data-cdim="purpose">按用途</button>
+            <button type="button" class="chart-dim-btn ${chartDim === 'member' ? 'active' : ''}" data-cdim="member">按成员</button>
+          </div>
+        </div>
+        <div class="chart-body">
+          <div class="donut-wrap">
+            <svg width="126" height="126" viewBox="0 0 126 126">
+              ${circlesSvg}
+            </svg>
+            <div class="donut-center">
+              <span class="donut-center-label">筛选净支出</span>
+              <span class="donut-center-val">¥${fm(totalNet, false)}</span>
+            </div>
+          </div>
+          <div class="chart-legend">
+            ${legendHtml}
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
   function renderLedger(report) {
     const lf = state.ledgerFilter;
     const allList = [
@@ -878,6 +983,8 @@
       })
       .sort((a, b) => (b.date || '').localeCompare(a.date || ''));
 
+    const chartHtml = buildExpenseChartHtml(filtered, lf.chartDim || 'category');
+
     return `
       <section class="card">
         <div class="card-header">
@@ -898,7 +1005,7 @@
           <button class="seg-btn ${lf.role === 'dengbao' ? 'active' : ''}" data-lrole="dengbao">噔宝 (${report.transactions.dengbao.length})</button>
         </div>
 
-        <div class="chip-grid" style="margin-bottom:12px;">
+        <div class="chip-grid" style="margin-bottom:14px;">
           ${['all', '日常', '必要开支', '许愿池', '工资', '孩子', '金蛋']
             .map(
               (p) => `
@@ -909,6 +1016,8 @@
             )
             .join('')}
         </div>
+
+        ${chartHtml}
 
         <div>
           ${
@@ -1564,6 +1673,13 @@
     main.querySelectorAll('[data-lpurpose]').forEach((btn) => {
       btn.onclick = () => {
         state.ledgerFilter.purpose = btn.dataset.lpurpose;
+        render();
+      };
+    });
+
+    main.querySelectorAll('[data-cdim]').forEach((btn) => {
+      btn.onclick = () => {
+        state.ledgerFilter.chartDim = btn.dataset.cdim;
         render();
       };
     });

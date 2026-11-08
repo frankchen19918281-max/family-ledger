@@ -35,9 +35,11 @@ Page({
     ledgerFilter: {
       role: 'all',
       purpose: 'all',
-      onlyCurrentPeriod: true
+      onlyCurrentPeriod: true,
+      chartDim: 'category'
     },
     filteredLedger: [],
+    expenseChart: { totalText: '0.00', items: [], gradient: '' },
 
     // 预算子Tab
     budgetSubTab: 'necessary', // necessary | wish | sync
@@ -219,10 +221,69 @@ Page({
       familyCode: rawData.familyCode || 'cq2026',
       view,
       filteredLedger,
+      expenseChart: this.buildExpenseChart(filteredLedger, lf.chartDim || 'category'),
       typeOptions,
       purposeOptions,
       categoryOptions
     });
+  },
+
+  buildExpenseChart(list, dim) {
+    const palette = ['#0d9488', '#3b82f6', '#ec4899', '#f59e0b', '#8b5cf6', '#10b981', '#ef4444', '#64748b'];
+    const groupMap = {};
+    (list || []).forEach((tx) => {
+      if (tx.type !== '支出' && tx.type !== '退款') return;
+      const amt = Number(tx.amount) || 0;
+      const net = tx.type === '支出' ? amt : -amt;
+      let key = '';
+      if (dim === 'category') {
+        key = tx.category || (tx.member === 'dengbao' ? '孩子用品' : tx.purpose || '其他');
+      } else if (dim === 'purpose') {
+        key = tx.member === 'dengbao' ? '噔宝支出' : tx.purpose || '其他';
+      } else {
+        key = tx.member === 'dengbao' ? `噔宝(${tx.payer}付)` : tx.member === 'c' ? 'c（你）' : 'q（她）';
+      }
+      groupMap[key] = (groupMap[key] || 0) + net;
+    });
+
+    const entries = Object.entries(groupMap)
+      .filter(([, val]) => val > 0)
+      .sort((a, b) => b[1] - a[1]);
+    const total = entries.reduce((acc, [, v]) => acc + v, 0);
+
+    let display = entries;
+    if (entries.length > 6) {
+      const top5 = entries.slice(0, 5);
+      const other = entries.slice(5).reduce((acc, [, v]) => acc + v, 0);
+      display = [...top5, ['其他类目合计', other]];
+    }
+
+    let curPct = 0;
+    const gradParts = [];
+    const items = display.map(([name, val], idx) => {
+      const pctNum = total > 0 ? (val / total) * 100 : 0;
+      const nextPct = curPct + pctNum;
+      const color = palette[idx % palette.length];
+      gradParts.push(`${color} ${curPct.toFixed(1)}% ${nextPct.toFixed(1)}%`);
+      curPct = nextPct;
+      return {
+        name,
+        valText: fm(val, false),
+        pct: pctNum.toFixed(1),
+        color
+      };
+    });
+
+    return {
+      totalText: fm(total, false),
+      items,
+      gradient: gradParts.length > 0 ? `conic-gradient(${gradParts.join(', ')})` : 'conic-gradient(#e2e8f0 0% 100%)'
+    };
+  },
+
+  selectChartDim(e) {
+    this.setData({ 'ledgerFilter.chartDim': e.currentTarget.dataset.dim });
+    this.refreshReport();
   },
 
   // 切换底部 Tab

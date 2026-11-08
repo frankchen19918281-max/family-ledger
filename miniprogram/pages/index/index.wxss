@@ -299,6 +299,80 @@
   margin-top: 6rpx;
 }
 
+.chart-box {
+  background: #f8fafc;
+  border: 1rpx solid #e2e8f0;
+  border-radius: 22rpx;
+  padding: 22rpx;
+  margin-bottom: 24rpx;
+}
+
+.dim-tabs {
+  display: flex;
+  background: #e2e8f0;
+  padding: 4rpx;
+  border-radius: 14rpx;
+}
+
+.dim-btn {
+  padding: 6rpx 14rpx;
+  font-size: 20rpx;
+  color: #64748b;
+  border-radius: 10rpx;
+  font-weight: 600;
+}
+
+.dim-btn.active {
+  background: #fff;
+  color: #0f766e;
+}
+
+.chart-body {
+  display: flex;
+  align-items: center;
+  gap: 24rpx;
+}
+
+.donut-ring {
+  width: 210rpx;
+  height: 210rpx;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.donut-hole {
+  width: 136rpx;
+  height: 136rpx;
+  border-radius: 50%;
+  background: #f8fafc;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+
+.hole-label {
+  font-size: 18rpx;
+  color: #64748b;
+}
+
+.hole-val {
+  font-size: 22rpx;
+  font-weight: 800;
+  color: #0f172a;
+}
+
+.legend-list {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 12rpx;
+}
+
+
 .tabbar {
   position: fixed;
   bottom: 0;

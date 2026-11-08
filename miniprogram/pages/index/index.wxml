@@ -236,6 +236,39 @@
       <view class="seg-item {{ledgerFilter.role === 'q' ? 'active' : ''}}" bindtap="selectLedgerRole" data-role="q">q 记账</view>
       <view class="seg-item {{ledgerFilter.role === 'dengbao' ? 'active' : ''}}" bindtap="selectLedgerRole" data-role="dengbao">噔宝</view>
     </view>
+
+    <!-- 净支出构成比例可视化图 -->
+    <view class="chart-box">
+      <view class="row-between" style="margin-bottom:14rpx;">
+        <text style="font-size:26rpx;font-weight:700;">🍩 净支出构成比例</text>
+        <view class="dim-tabs">
+          <text class="dim-btn {{ledgerFilter.chartDim === 'category' ? 'active' : ''}}" bindtap="selectChartDim" data-dim="category">按分类</text>
+          <text class="dim-btn {{ledgerFilter.chartDim === 'purpose' ? 'active' : ''}}" bindtap="selectChartDim" data-dim="purpose">按用途</text>
+          <text class="dim-btn {{ledgerFilter.chartDim === 'member' ? 'active' : ''}}" bindtap="selectChartDim" data-dim="member">按成员</text>
+        </view>
+      </view>
+      <view class="chart-body">
+        <view class="donut-ring" style="background: {{expenseChart.gradient}};">
+          <view class="donut-hole">
+            <text class="hole-label">筛选净支出</text>
+            <text class="hole-val">¥{{expenseChart.totalText}}</text>
+          </view>
+        </view>
+        <view class="legend-list">
+          <view wx:for="{{expenseChart.items}}" wx:key="name" class="legend-item">
+            <view class="row-between" style="margin-bottom:4rpx;font-size:22rpx;">
+              <view style="display:flex;align-items:center;gap:8rpx;">
+                <view class="dot" style="background:{{item.color}};"></view>
+                <text>{{item.name}}</text>
+              </view>
+              <text style="color:#64748b;">¥{{item.valText}} ({{item.pct}}%)</text>
+            </view>
+            <progress percent="{{item.pct}}" stroke-width="5" border-radius="4" activeColor="{{item.color}}" />
+          </view>
+        </view>
+      </view>
+    </view>
+
     <view wx:for="{{filteredLedger}}" wx:key="id" class="tx-row">
       <view>
         <view class="tx-title">
