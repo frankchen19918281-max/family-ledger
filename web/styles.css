@@ -126,8 +126,26 @@ body {
 
 .period-select-wrap {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.period-today-btn {
+  background: rgba(251, 191, 36, 0.95);
+  color: #78350f;
+  border: none;
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.period-today-btn.hidden {
+  display: none;
 }
 
 .period-select {
@@ -570,10 +588,23 @@ body {
   border: none;
   background: none;
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: 10.5px;
   font-weight: 600;
   cursor: pointer;
   padding: 4px 0;
+  white-space: nowrap;
+  position: relative;
+}
+
+.tab-alert-dot {
+  position: absolute;
+  top: 2px;
+  right: 18%;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #ef4444;
+  box-shadow: 0 0 0 2px #fff;
 }
 
 .tab-item.active {
@@ -914,6 +945,132 @@ body {
   font-size: 13px;
   color: var(--text-muted);
 }
+
+/* Membership & Stored-Value Cards */
+.mcard-item {
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+  padding: 14px;
+  margin-bottom: 12px;
+  transition: box-shadow 0.15s, border-color 0.15s;
+}
+
+.mcard-item.urgent {
+  border-color: #fbbf24;
+  background: linear-gradient(180deg, #fffdf7 0%, #ffffff 100%);
+}
+
+.mcard-item.expired {
+  border-color: #fca5a5;
+  background: linear-gradient(180deg, #fffafa 0%, #ffffff 100%);
+}
+
+.mcard-item.inactive {
+  opacity: 0.68;
+  background: #f8fafc;
+}
+
+.mcard-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.mcard-title-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.mcard-name {
+  font-size: 15px;
+  font-weight: 800;
+  color: var(--text);
+}
+
+.mcard-main-nums {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 8px;
+}
+
+.mcard-rem-big {
+  font-size: 21px;
+  font-weight: 800;
+  color: var(--primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.mcard-price-meta {
+  font-size: 12px;
+  color: var(--text-sub);
+  text-align: right;
+}
+
+.mcard-meta-lines {
+  font-size: 12px;
+  color: var(--text-sub);
+  line-height: 1.6;
+  margin-top: 8px;
+}
+
+.mcard-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed #e2e8f0;
+}
+
+.mcard-btn-use {
+  background: var(--primary);
+  color: #fff;
+  border: none;
+  padding: 5px 11px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.mcard-btn-topup {
+  background: var(--primary-light);
+  color: var(--primary-dark);
+  border: 1px solid #99f6e4;
+  padding: 5px 10px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.mcard-logs-box {
+  margin-top: 10px;
+  background: #f8fafc;
+  border-radius: 10px;
+  padding: 8px 10px;
+  font-size: 11.5px;
+  color: var(--text-sub);
+  border: 1px solid #e2e8f0;
+}
+
+.mcard-log-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 4px 0;
+  border-bottom: 1px solid #f1f5f9;
+}
+
+.mcard-log-row:last-child {
+  border-bottom: none;
+}
+
 
 
 

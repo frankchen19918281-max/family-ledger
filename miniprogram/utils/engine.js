@@ -147,7 +147,8 @@
         { id: 'td6', date: '2026-10-29', amount: 274, payer: 'q', type: '支出', category: '孩子用品', note: '' },
         { id: 'td7', date: '2026-11-01', amount: 990, payer: 'q', type: '支出', category: '餐饮出行', note: '' }
       ]
-    }
+    },
+    memberCards: []
   };
 
   // 工具函数：数值与日期处理
@@ -196,11 +197,24 @@
   }
 
   /**
+   * 获取本地日期字符串 "YYYY-MM-DD"
+   */
+  function getTodayDateStr(now) {
+    const d = now instanceof Date ? now : new Date();
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  }
+
+  /**
    * 根据日期字符串 "YYYY-MM-DD" 推断所属账期 key "YYYY-MM" 及所属预算年
    * 规则：每月10日~次月9日为当月账期；每年1月10日~次年1月9日为当年预算年度
    */
   function getPeriodFromDate(dateStr) {
-    if (!dateStr || typeof dateStr !== 'string') return { periodKey: '2026-10', budgetYear: 2026 };
+    if (!dateStr || typeof dateStr !== 'string') {
+      return getPeriodFromDate(getTodayDateStr());
+    }
     const parts = dateStr.split('-');
     if (parts.length < 3) return { periodKey: '2026-10', budgetYear: 2026 };
     let y = parseInt(parts[0], 10);
@@ -217,6 +231,20 @@
     return {
       periodKey: `${y}-${String(m).padStart(2, '0')}`,
       budgetYear
+    };
+  }
+
+  /**
+   * 获取当前真实日期对应的当期账期信息（每月10日自动进入新账期）
+   */
+  function getCurrentPeriodInfo(now) {
+    const todayStr = getTodayDateStr(now);
+    const info = getPeriodFromDate(todayStr);
+    return {
+      todayStr,
+      periodKey: info.periodKey,
+      budgetYear: info.budgetYear,
+      range: getPeriodRange(info.periodKey)
     };
   }
 
@@ -472,9 +500,12 @@
    * 完全对齐《月度分配》工作表的跨月结转逻辑
    */
   function computeAllocationsChain(data, budgets, targetPeriodKey) {
-    // 预设账期序列（覆盖 2026-01 到 2027-12）
+    // 动态账期序列（覆盖 2026-01 到 当前/目标年份后一年，无需跨年手动调整）
+    const curYear = getCurrentPeriodInfo().budgetYear || 2026;
+    const targetYear = targetPeriodKey ? parseInt(String(targetPeriodKey).split('-')[0], 10) || curYear : curYear;
+    const maxYear = Math.max(2027, curYear, targetYear);
     const allPeriods = [];
-    for (let y = 2026; y <= 2027; y++) {
+    for (let y = 2026; y <= maxYear; y++) {
       for (let m = 1; m <= 12; m++) {
         allPeriods.push(`${y}-${String(m).padStart(2, '0')}`);
       }
@@ -507,11 +538,15 @@
         const wishMonthly = budgets[member].wishMonthly;
 
         const hasSalary = isNum(salary);
-        // 金蛋补足 = (工资 - 必要开支月均) * 50% - 固定金蛋
-        const goldenEggSupplement = hasSalary ? (salary - necMonthly) * 0.5 - fixedGoldenEgg : null;
-        // 金蛋应存合计 = 固定金蛋 + 金蛋补足 = (工资 - 必要开支月均) * 50%
+        // 固定金蛋（默认 2000）为最低保底标准：
+        // 若 (工资 - 必要月均) * 50% >= 固定金蛋，超出部分作为「金蛋补足」；
+        // 若不足固定金蛋，则「金蛋补足」为 0（不出现负数），金蛋仍按保底 2000 存入，不足差额自动从 daily 零花钱中补足
+        const rawSupplement = hasSalary ? (salary - necMonthly) * 0.5 - fixedGoldenEgg : null;
+        const goldenEggSupplement = hasSalary ? Math.max(0, rawSupplement) : null;
+        const goldenEggShortfall = hasSalary && rawSupplement < 0 ? -rawSupplement : 0;
+        // 金蛋应存合计 = 固定金蛋 + 金蛋补足 = MAX(固定金蛋, (工资 - 必要开支月均) * 50%)
         const goldenEggTotal = isNum(goldenEggSupplement) ? fixedGoldenEgg + goldenEggSupplement : null;
-        // daily 零花钱 = 工资 - 必要开支月均 - 固定金蛋 - 许愿池月均 - 金蛋补足
+        // daily 零花钱 = 工资 - 必要开支月均 - 固定金蛋 - 许愿池月均 - 金蛋补足（不足保底部分已自动从零花钱中扣补）
         const dailyAllowance = isNum(goldenEggSupplement)
           ? salary - necMonthly - fixedGoldenEgg - wishMonthly - goldenEggSupplement
           : null;
@@ -551,6 +586,7 @@
           salary,
           necessaryMonthly: necMonthly,
           goldenEggSupplement,
+          goldenEggShortfall,
           goldenEggTotal,
           wishMonthly,
           dailyAllowance,
@@ -616,9 +652,9 @@
    * 计算年度预算跟踪、流水逐笔累计额度与年末结余转存
    */
   function computeAnnualTracking(data, budgets, currentPeriodKey) {
-    const budgetYear = Number(data.settings.budgetYear) || 2026;
+    const curRange = getPeriodRange(currentPeriodKey || getCurrentPeriodInfo().periodKey || '2026-10');
+    const budgetYear = curRange.year || Number(data.settings.budgetYear) || 2026;
     const yearRange = getBudgetYearRange(budgetYear);
-    const curRange = getPeriodRange(currentPeriodKey || data.settings.currentPeriod || '2026-10');
     const threshold = Number(data.settings.warningThreshold) || 0.8;
 
     // 截至本期截止日的年度范围：[yearRange.startDate, curRange.nextStartDate)
@@ -791,8 +827,9 @@
   /**
    * 为 c/q 的每一笔流水附加自动检查、本笔后剩余额度、年度预算提醒（还原 G、H、K、L 列）
    */
-  function enrichMemberTransactions(data, budgets, member) {
-    const budgetYear = Number(data.settings.budgetYear) || 2026;
+  function enrichMemberTransactions(data, budgets, member, targetPeriodKey) {
+    const curRange = getPeriodRange(targetPeriodKey || getCurrentPeriodInfo().periodKey || '2026-10');
+    const budgetYear = curRange.year || Number(data.settings.budgetYear) || 2026;
     const yearRange = getBudgetYearRange(budgetYear);
     const threshold = Number(data.settings.warningThreshold) || 0.8;
     const yeCfg = (data.settings.yearEnd && data.settings.yearEnd[member]) || {};
@@ -943,18 +980,25 @@
     };
 
     const current = calcForPeriod(pKey);
-    // 生成从 2026-10 起的 12 个账期趋势
+    // 生成从 2026-10 起的账期趋势，并确保覆盖当前选定账期
     const monthlySeries = [];
+    const seenKeys = new Set();
     let y = 2026;
     let m = 10;
-    for (let i = 0; i < 12; i++) {
+    const maxPKey = pKey > '2027-09' ? pKey : '2027-09';
+    while (`${y}-${String(m).padStart(2, '0')}` <= maxPKey && monthlySeries.length < 60) {
       const k = `${y}-${String(m).padStart(2, '0')}`;
+      seenKeys.add(k);
       monthlySeries.push(calcForPeriod(k));
       m += 1;
       if (m > 12) {
         m = 1;
         y += 1;
       }
+    }
+    if (!seenKeys.has(pKey)) {
+      monthlySeries.push(current);
+      monthlySeries.sort((a, b) => a.periodKey.localeCompare(b.periodKey));
     }
 
     return {
@@ -969,8 +1013,11 @@
   /**
    * 计算年度家庭汇总（家庭汇总 Rows 52-92：全年实际收支 & 12个账期趋势）
    */
-  function computeAnnualSummary(data) {
-    const statYear = Number(data.settings.statYear || data.settings.budgetYear) || 2026;
+  function computeAnnualSummary(data, selectedPeriodKey) {
+    const curYear = selectedPeriodKey
+      ? getPeriodRange(selectedPeriodKey).year
+      : Number(data.settings.statYear || data.settings.budgetYear) || getCurrentPeriodInfo().budgetYear || 2026;
+    const statYear = curYear || 2026;
     const yearRange = getBudgetYearRange(statYear);
 
     const cYear = summarizeMemberRange(data, 'c', yearRange.startDate, yearRange.nextStartDate);
@@ -1022,18 +1069,152 @@
   }
 
   /**
+   * 计算会员储值卡明细（价格、余额/剩余次数、保质期倒计时与临期预警）
+   */
+  function computeMemberCardsReport(data, todayDateStr) {
+    const todayStr = todayDateStr || getTodayDateStr();
+    const tToday = new Date(todayStr + 'T00:00:00').getTime();
+    const rawCards = Array.isArray(data.memberCards) ? data.memberCards : [];
+
+    const cards = rawCards.map((c) => {
+      const cardType = c.cardType || 'stored'; // stored | times | period
+      const owner = c.owner || 'family'; // family | c | q | dengbao
+      const price = Number(c.price) || 0;
+      const hasTotal = c.totalValue !== null && c.totalValue !== undefined && c.totalValue !== '';
+      const totalValue = hasTotal ? Number(c.totalValue) : cardType === 'stored' ? price : 0;
+      const hasRem = c.remainingValue !== null && c.remainingValue !== undefined && c.remainingValue !== '';
+      const remainingValue = hasRem ? Number(c.remainingValue) : totalValue;
+      const expiryDate = c.expiryDate ? String(c.expiryDate).trim() : '';
+      const openDate = c.openDate ? String(c.openDate).trim() : '';
+      const archived = !!c.archived;
+
+      let daysLeft = null;
+      if (expiryDate && /^\d{4}-\d{2}-\d{2}$/.test(expiryDate)) {
+        const tExp = new Date(expiryDate + 'T00:00:00').getTime();
+        if (!isNaN(tExp)) {
+          daysLeft = Math.round((tExp - tToday) / 86400000);
+        }
+      }
+
+      const isExpired = daysLeft !== null && daysLeft < 0;
+      const isExpiringSoon = daysLeft !== null && daysLeft >= 0 && daysLeft <= 30;
+      const isDepleted = (cardType === 'stored' || cardType === 'times') && remainingValue <= 0;
+      const isInactive = archived || isDepleted;
+
+      let expiryBadgeText = '长期有效';
+      let expiryLevel = 'ok';
+      if (daysLeft !== null) {
+        if (daysLeft < 0) {
+          expiryBadgeText = `已过期 ${Math.abs(daysLeft)} 天`;
+          expiryLevel = 'danger';
+        } else if (daysLeft === 0) {
+          expiryBadgeText = '今日到期';
+          expiryLevel = 'danger';
+        } else if (daysLeft <= 30) {
+          expiryBadgeText = `剩 ${daysLeft} 天到期`;
+          expiryLevel = 'warn';
+        } else {
+          expiryBadgeText = `有效 · 剩 ${daysLeft} 天`;
+          expiryLevel = 'ok';
+        }
+      }
+
+      // 剩余进度百分比 (0-100)
+      let remainPct = 100;
+      if (cardType === 'stored' || cardType === 'times') {
+        remainPct = totalValue > 0 ? Math.max(0, Math.min(100, (remainingValue / totalValue) * 100)) : 0;
+      } else if (expiryDate && openDate && daysLeft !== null) {
+        const tOpen = new Date(openDate + 'T00:00:00').getTime();
+        const tExp = new Date(expiryDate + 'T00:00:00').getTime();
+        const totalDays = Math.max(1, Math.round((tExp - tOpen) / 86400000));
+        remainPct = Math.max(0, Math.min(100, (Math.max(0, daysLeft) / totalDays) * 100));
+      }
+
+      // 折算单价或折扣提示
+      let valueHint = '';
+      if (cardType === 'times' && totalValue > 0 && price > 0) {
+        valueHint = `折合 ¥${formatMoney(price / totalValue, false)}/次`;
+      } else if (cardType === 'stored' && totalValue > price && price > 0) {
+        const disc = ((price / totalValue) * 10).toFixed(1);
+        valueHint = `相当于 ${disc} 折（赠送 ¥${formatMoney(totalValue - price, false)}）`;
+      } else if (cardType === 'period' && openDate && expiryDate && price > 0) {
+        const tOpen = new Date(openDate + 'T00:00:00').getTime();
+        const tExp = new Date(expiryDate + 'T00:00:00').getTime();
+        const totalMonths = Math.max(1, Math.round((tExp - tOpen) / (86400000 * 30)));
+        valueHint = `约 ${totalMonths} 个月 · 折合 ¥${formatMoney(price / totalMonths, false)}/月`;
+      }
+
+      return {
+        ...c,
+        cardType,
+        owner,
+        price: round2(price),
+        totalValue: round2(totalValue),
+        remainingValue: round2(remainingValue),
+        openDate,
+        expiryDate,
+        archived,
+        daysLeft,
+        isExpired,
+        isExpiringSoon,
+        isDepleted,
+        isInactive,
+        expiryBadgeText,
+        expiryLevel,
+        remainPct: round2(remainPct),
+        valueHint,
+        logs: Array.isArray(c.logs) ? c.logs : []
+      };
+    });
+
+    // 排序：在用且临期/过期的排最前，其次在用卡按开卡日期倒序，已用完/归档排最后
+    cards.sort((a, b) => {
+      if (a.isInactive !== b.isInactive) return a.isInactive ? 1 : -1;
+      const aUrgent = (a.isExpiringSoon || a.isExpired) && !a.isInactive ? 1 : 0;
+      const bUrgent = (b.isExpiringSoon || b.isExpired) && !b.isInactive ? 1 : 0;
+      if (aUrgent !== bUrgent) return bUrgent - aUrgent;
+      if (aUrgent && bUrgent && a.daysLeft !== null && b.daysLeft !== null) {
+        return a.daysLeft - b.daysLeft;
+      }
+      return (b.openDate || '').localeCompare(a.openDate || '');
+    });
+
+    const activeCards = cards.filter((c) => !c.isInactive);
+    const totalPaidPrice = cards.reduce((acc, c) => acc + c.price, 0);
+    const totalStoredRemaining = activeCards
+      .filter((c) => c.cardType === 'stored' && !c.isExpired)
+      .reduce((acc, c) => acc + Math.max(0, c.remainingValue), 0);
+    const expiringSoonCards = activeCards.filter((c) => c.isExpiringSoon);
+    const expiredActiveCards = activeCards.filter((c) => c.isExpired);
+
+    return {
+      cards,
+      activeCount: activeCards.length,
+      inactiveCount: cards.length - activeCards.length,
+      totalCount: cards.length,
+      totalPaidPrice: round2(totalPaidPrice),
+      totalStoredRemaining: round2(totalStoredRemaining),
+      expiringSoonCards,
+      expiredActiveCards,
+      alertCount: expiringSoonCards.length + expiredActiveCards.length
+    };
+  }
+
+  /**
    * 一站式计算全量视图模型
    */
   function computeFullReport(data, selectedPeriodKey) {
-    const activePeriod = selectedPeriodKey || data.settings.currentPeriod || '2026-10';
+    const autoPeriodKey = getCurrentPeriodInfo().periodKey;
+    const activePeriod = selectedPeriodKey || autoPeriodKey || data.settings.currentPeriod || '2026-10';
     const budgets = computeBudgets(data);
     const allocationsChain = computeAllocationsChain(data, budgets, activePeriod);
     const currentAllocation = allocationsChain[activePeriod];
     const annualTracking = computeAnnualTracking(data, budgets, activePeriod);
-    const annualSummary = computeAnnualSummary(data);
+    const annualSummary = computeAnnualSummary(data, activePeriod);
     const dengbaoReport = computeDengbaoReport(data, budgets, activePeriod);
-    const cEnrichedTxs = enrichMemberTransactions(data, budgets, 'c');
-    const qEnrichedTxs = enrichMemberTransactions(data, budgets, 'q');
+    const memberCardsReport = computeMemberCardsReport(data);
+    const cEnrichedTxs = enrichMemberTransactions(data, budgets, 'c', activePeriod);
+    const qEnrichedTxs = enrichMemberTransactions(data, budgets, 'q', activePeriod);
     const dbEnrichedTxs = (data.transactions.dengbao || []).map((t, i) => ({
       ...t,
       index: i + 1,
@@ -1049,6 +1230,7 @@
 
     return {
       activePeriod,
+      autoPeriodKey,
       periodRange: getPeriodRange(activePeriod),
       budgets,
       allocationsChain,
@@ -1056,6 +1238,7 @@
       annualTracking,
       annualSummary,
       dengbaoReport,
+      memberCardsReport,
       transactions: {
         c: cEnrichedTxs,
         q: qEnrichedTxs,
@@ -1069,6 +1252,8 @@
     INITIAL_DATA,
     round2,
     formatMoney,
+    getTodayDateStr,
+    getCurrentPeriodInfo,
     getPeriodRange,
     getPeriodFromDate,
     getBudgetYearRange,
@@ -1080,6 +1265,7 @@
     computeAnnualTracking,
     computeAnnualSummary,
     computeDengbaoReport,
+    computeMemberCardsReport,
     enrichMemberTransactions,
     computeFullReport
   };

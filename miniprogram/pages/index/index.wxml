@@ -43,7 +43,7 @@
   <!-- 本期工资分配明细 -->
   <view class="card">
     <view class="card-title">💰 本期工资分配明细</view>
-    <view class="card-sub">金蛋=(工资-必要月均)×50% · 另需转存=金蛋补足+许愿池月均</view>
+    <view class="card-sub">金蛋保底2000（高于则按50%计），差额自动从零花钱补足</view>
     <view class="table-row th">
       <text class="col-name">项目</text>
       <text class="col-val">c（你）</text>
@@ -306,7 +306,91 @@
   </view>
 </block>
 
-<!-- 5. 预算与同步 Tab -->
+<!-- 5. 会员储值卡明细 Tab -->
+<block wx:if="{{currentTab === 'cards'}}">
+  <view class="hero-card" style="background:linear-gradient(135deg,#0f766e,#1e3a8a);">
+    <view class="hero-top">
+      <view>
+        <view class="hero-label" style="color:#ccfbf1;">💳 储值卡可用总余额（在用 {{cardsSummary.activeCount}} 张）</view>
+        <view class="hero-total" style="color:#fff;">¥ {{cardsSummary.totalStoredRem}}</view>
+      </view>
+      <view class="quick-btn" bindtap="toggleCardForm">{{cardFormOpen ? '收起' : '+ 记新卡'}}</view>
+    </view>
+    <view class="person-grid">
+      <view class="person-box">
+        <view class="person-head">累计办卡实付</view>
+        <view class="person-val">¥ {{cardsSummary.totalPaid}}</view>
+      </view>
+      <view class="person-box">
+        <view class="person-head">临期/过期提醒</view>
+        <view class="person-val">{{cardsSummary.alertCount}} 张</view>
+      </view>
+    </view>
+  </view>
+
+  <view wx:if="{{cardFormOpen}}" class="card">
+    <view class="card-title">💳 新增会员储值卡</view>
+    <view class="seg-bar">
+      <view class="seg-item {{cardForm.cardType === 'stored' ? 'active' : ''}}" bindtap="selectCardType" data-type="stored">储值卡</view>
+      <view class="seg-item {{cardForm.cardType === 'times' ? 'active' : ''}}" bindtap="selectCardType" data-type="times">计次卡</view>
+      <view class="seg-item {{cardForm.cardType === 'period' ? 'active' : ''}}" bindtap="selectCardType" data-type="period">期限会员</view>
+    </view>
+    <view class="form-label">卡名称 / 店名</view>
+    <input class="input-box" placeholder="如：山姆会员卡、理发店充值卡" value="{{cardForm.name}}" bindinput="onCardFieldInput" data-field="name" />
+    <view class="form-label">归属人</view>
+    <view class="chip-wrap">
+      <view class="chip {{cardForm.owner === 'family' ? 'active' : ''}}" bindtap="selectCardOwner" data-owner="family">家庭共用</view>
+      <view class="chip {{cardForm.owner === 'c' ? 'active' : ''}}" bindtap="selectCardOwner" data-owner="c">c（你）</view>
+      <view class="chip {{cardForm.owner === 'q' ? 'active' : ''}}" bindtap="selectCardOwner" data-owner="q">q（她）</view>
+      <view class="chip {{cardForm.owner === 'dengbao' ? 'active' : ''}}" bindtap="selectCardOwner" data-owner="dengbao">噔宝</view>
+    </view>
+    <view class="form-label">充值/办卡实付价格（元）</view>
+    <input class="input-box" type="digit" placeholder="0" value="{{cardForm.price}}" bindinput="onCardFieldInput" data-field="price" />
+    <block wx:if="{{cardForm.cardType !== 'period'}}">
+      <view class="form-label">{{cardForm.cardType === 'times' ? '总次数（次）' : '卡内到账面额（选填，默认同实付）'}}</view>
+      <input class="input-box" type="digit" placeholder="选填" value="{{cardForm.totalValue}}" bindinput="onCardFieldInput" data-field="totalValue" />
+    </block>
+    <view class="form-label">充卡日期</view>
+    <picker mode="date" value="{{cardForm.openDate}}" bindchange="onCardDateChange" data-field="openDate">
+      <view class="input-box">{{cardForm.openDate}}</view>
+    </picker>
+    <view class="form-label">保质期 / 有效期至</view>
+    <picker mode="date" value="{{cardForm.expiryDate}}" bindchange="onCardDateChange" data-field="expiryDate">
+      <view class="input-box">{{cardForm.expiryDate || '长期有效'}}</view>
+    </picker>
+    <view class="chip-wrap" style="margin-top:12rpx;">
+      <view class="chip" bindtap="quickCardExpiry" data-months="none">长期有效</view>
+      <view class="chip" bindtap="quickCardExpiry" data-months="6">+半年</view>
+      <view class="chip" bindtap="quickCardExpiry" data-months="12">+1年</view>
+      <view class="chip" bindtap="quickCardExpiry" data-months="24">+2年</view>
+    </view>
+    <view class="form-label">备注（手机号/门店/规则）</view>
+    <input class="input-box" placeholder="如：绑定q手机号..." value="{{cardForm.note}}" bindinput="onCardFieldInput" data-field="note" />
+    <button class="submit-btn" bindtap="submitMemberCard">✅ 存入会员卡包</button>
+  </view>
+
+  <view class="card">
+    <view class="card-title">🗂️ 会员储值卡明细 ({{memberCards.length}}张)</view>
+    <view wx:for="{{memberCards}}" wx:key="id" class="tx-row">
+      <view>
+        <view class="tx-title">
+          <text>{{item.name}}</text>
+          <text class="badge badge-c">{{item.ownerLabel}}</text>
+          <text class="badge badge-info">{{item.typeLabel}}</text>
+        </view>
+        <view class="tx-date">充卡: {{item.openDate}} | 保质期: {{item.expiryDate || '长期有效'}} ({{item.expiryBadgeText}})</view>
+        <view wx:if="{{item.note}}" class="tx-date">备注: {{item.note}}</view>
+      </view>
+      <view class="tx-right">
+        <view class="tx-amt">{{item.cardType === 'times' ? '余' + item.remText + '次' : item.cardType === 'period' ? '¥' + item.priceText : '余¥' + item.remText}}</view>
+        <view class="tx-quota">实付 ¥{{item.priceText}}</view>
+        <view class="del-link" bindtap="deleteMemberCard" data-id="{{item.id}}">删除</view>
+      </view>
+    </view>
+  </view>
+</block>
+
+<!-- 6. 预算与同步 Tab -->
 <block wx:if="{{currentTab === 'budget'}}">
   <view class="card">
     <view class="seg-bar">
@@ -376,6 +460,10 @@
   <view class="tab-item {{currentTab === 'dengbao' ? 'active' : ''}}" bindtap="switchTab" data-tab="dengbao">
     <text class="tab-icon">👶</text>
     <text>噔宝专区</text>
+  </view>
+  <view class="tab-item {{currentTab === 'cards' ? 'active' : ''}}" bindtap="switchTab" data-tab="cards">
+    <text class="tab-icon">💳</text>
+    <text>储值卡</text>
   </view>
   <view class="tab-item {{currentTab === 'budget' ? 'active' : ''}}" bindtap="switchTab" data-tab="budget">
     <text class="tab-icon">🎯</text>

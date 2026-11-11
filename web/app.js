@@ -120,12 +120,58 @@
 
   const savedPrefRole = localStorage.getItem(PREF_ROLE_KEY) || 'c';
 
+  function getAutoPeriodKey() {
+    return Engine.getPeriodFromDate(getTodayStr()).periodKey;
+  }
+
+  function addMonthsToDateStr(baseStr, addMonths) {
+    const src = baseStr && /^\d{4}-\d{2}-\d{2}$/.test(baseStr) ? baseStr : getTodayStr();
+    const [y0, m0, d0] = src.split('-').map((n) => parseInt(n, 10));
+    const totalM = y0 * 12 + (m0 - 1) + addMonths;
+    const ny = Math.floor(totalM / 12);
+    const nm = (totalM % 12) + 1;
+    const maxDay = new Date(ny, nm, 0).getDate();
+    const nd = Math.min(d0, maxDay);
+    return `${ny}-${String(nm).padStart(2, '0')}-${String(nd).padStart(2, '0')}`;
+  }
+
+  function escHtml(s) {
+    return String(s ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  function createEmptyCardForm() {
+    const today = getTodayStr();
+    return {
+      open: false,
+      editingId: null,
+      name: '',
+      cardType: 'stored', // stored | times | period
+      owner: 'family', // family | c | q | dengbao
+      price: '',
+      totalValue: '',
+      remainingValue: '',
+      openDate: today,
+      expiryDate: addMonthsToDateStr(today, 12),
+      note: '',
+      syncToLedger: false,
+      ledgerRole: savedPrefRole === 'q' ? 'q' : 'c',
+      ledgerPurpose: '日常'
+    };
+  }
+
+  const initialAutoPeriod = getAutoPeriodKey();
+
   // 应用状态
   const state = {
     data: loadLocalData(),
     cloudCfg: loadCloudConfig(),
-    currentTab: 'dashboard', // dashboard | add | ledger | dengbao | budget
-    activePeriod: '2026-10',
+    currentTab: 'dashboard', // dashboard | add | ledger | dengbao | cards | budget
+    activePeriod: initialAutoPeriod,
+    lastAutoPeriod: initialAutoPeriod,
     // 记一笔状态（自动记住本机默认角色 + 默认今天日期）
     addForm: {
       role: savedPrefRole, // c | q | dengbao
@@ -148,6 +194,13 @@
       searchKeyword: '',
       selectedChartItem: ''
     },
+    // 会员储值卡状态
+    cardForm: createEmptyCardForm(),
+    cardFilter: {
+      type: 'active', // active | stored | times | period | alert | inactive
+      keyword: ''
+    },
+    expandedCardIds: {},
     // 预算/同步页子Tab
     budgetSubTab: 'necessary', // necessary | wish | yearend | sync
     budgetRole: 'c',
@@ -155,19 +208,36 @@
     syncModeLabel: '本地'
   };
 
+  function normalizeLoadedData(d) {
+    if (!d) return d;
+    d.memberCards = Array.isArray(d.memberCards) ? d.memberCards : [];
+    d.deletedCardIds = Array.isArray(d.deletedCardIds) ? d.deletedCardIds : [];
+    d.settings = d.settings || {};
+    const autoInfo = Engine.getCurrentPeriodInfo();
+    if (!d.settings.currentPeriod || d.settings.currentPeriod < autoInfo.periodKey) {
+      d.settings.currentPeriod = autoInfo.periodKey;
+      d.settings.dengbaoPeriod = autoInfo.periodKey;
+    }
+    if (!d.settings.budgetYear || d.settings.budgetYear < autoInfo.budgetYear) {
+      d.settings.budgetYear = autoInfo.budgetYear;
+      d.settings.statYear = autoInfo.budgetYear;
+    }
+    return d;
+  }
+
   function loadLocalData() {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
       if (raw) {
         const parsed = JSON.parse(raw);
         if (parsed && parsed.transactions && parsed.necessaryBudgets) {
-          return parsed;
+          return normalizeLoadedData(parsed);
         }
       }
     } catch (e) {
       console.warn('读取本地缓存失败，使用初始 Excel 预置数据', e);
     }
-    return JSON.parse(JSON.stringify(Engine.INITIAL_DATA));
+    return normalizeLoadedData(JSON.parse(JSON.stringify(Engine.INITIAL_DATA)));
   }
 
   function saveData(triggerSync = true) {
@@ -222,11 +292,33 @@
       merged.transactions[role] = Array.from(map.values()).filter((tx) => !deletedIds.has(tx.id));
     });
 
+    // 合并会员储值卡明细（按 id 去重，按卡片 updatedAt 保留最新修改，并过滤已删除卡片）
+    const deletedCardIds = new Set([
+      ...(local.deletedCardIds || []),
+      ...(remote.deletedCardIds || [])
+    ]);
+    merged.deletedCardIds = Array.from(deletedCardIds);
+    const cardMap = new Map();
+    const olderCards = ((remote.updatedAt || '') > (local.updatedAt || '') ? local : remote).memberCards || [];
+    const newerCards = ((remote.updatedAt || '') > (local.updatedAt || '') ? remote : local).memberCards || [];
+    olderCards.forEach((c) => {
+      if (c && c.id) cardMap.set(c.id, c);
+    });
+    newerCards.forEach((c) => {
+      if (c && c.id) {
+        const prev = cardMap.get(c.id);
+        if (!prev || (c.updatedAt || '') >= (prev.updatedAt || '')) {
+          cardMap.set(c.id, c);
+        }
+      }
+    });
+    merged.memberCards = Array.from(cardMap.values()).filter((c) => !deletedCardIds.has(c.id));
+
     // 合并分类标签
     merged.categories = Array.from(new Set([...(local.categories || []), ...(remote.categories || [])]));
     merged.dengbaoCategories = Array.from(new Set([...(local.dengbaoCategories || []), ...(remote.dengbaoCategories || [])]));
 
-    return merged;
+    return normalizeLoadedData(merged);
   }
 
   // 双人实时同步（支持 GitHub Gist / Gitee 代码片段 / 局域网服务端 三合一自动同步）
@@ -257,9 +349,9 @@
             state.syncModeLabel = cfg.provider === 'github' ? 'GitHub云' : 'Gitee云';
             updateSyncHeader();
 
-            const localStr = JSON.stringify(state.data.transactions);
+            const localStr = JSON.stringify({ tx: state.data.transactions, cards: state.data.memberCards || [] });
             const merged = mergeLedgerData(state.data, remoteData);
-            const mergedStr = JSON.stringify(merged.transactions);
+            const mergedStr = JSON.stringify({ tx: merged.transactions, cards: merged.memberCards || [] });
 
             if (localStr !== mergedStr || (remoteData.updatedAt && remoteData.updatedAt > (state.data.updatedAt || ''))) {
               state.data = merged;
@@ -286,10 +378,14 @@
       state.syncModeLabel = 'Wi-Fi同步';
       updateSyncHeader();
       if (payload && payload.data && payload.data.updatedAt) {
+        const localStr = JSON.stringify({ tx: state.data.transactions, cards: state.data.memberCards || [] });
         const merged = mergeLedgerData(state.data, payload.data);
-        state.data = merged;
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(state.data));
-        render();
+        const mergedStr = JSON.stringify({ tx: merged.transactions, cards: merged.memberCards || [] });
+        if (localStr !== mergedStr || payload.data.updatedAt > (state.data.updatedAt || '')) {
+          state.data = merged;
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(state.data));
+          render();
+        }
       }
       return true;
     } catch (e) {
@@ -411,53 +507,112 @@
     txt.textContent = `${state.syncModeLabel}: ${code}`;
   }
 
-  // 生成账期下拉选项 (2026-01 ~ 2027-12)
+  function syncPeriodBarUI() {
+    const autoKey = getAutoPeriodKey();
+    const sel = document.getElementById('periodSelect');
+    if (sel) sel.value = state.activePeriod;
+    const jumpBtn = document.getElementById('jumpCurrentPeriodBtn');
+    if (jumpBtn) {
+      jumpBtn.classList.toggle('hidden', state.activePeriod === autoKey);
+    }
+  }
+
+  // 每月过了9号（进入10号新账期）自动切换到下一账期，无需手动调整
+  function checkAndAutoAdvancePeriod() {
+    const nowPeriod = getAutoPeriodKey();
+    if (nowPeriod !== state.lastAutoPeriod) {
+      state.lastAutoPeriod = nowPeriod;
+      state.activePeriod = nowPeriod;
+      state.data.settings.currentPeriod = nowPeriod;
+      state.data.settings.dengbaoPeriod = nowPeriod;
+      const autoYear = Engine.getPeriodRange(nowPeriod).year;
+      state.data.settings.budgetYear = autoYear;
+      state.data.settings.statYear = autoYear;
+      if (state.addForm && !state.addForm.editingId) {
+        state.addForm.date = getTodayStr();
+      }
+      initPeriodSelect();
+      saveData(false);
+      render();
+      showToast(`📅 已自动更新至新账期：${Engine.getPeriodRange(nowPeriod).label}`);
+    }
+  }
+
+  // 生成账期下拉选项（动态覆盖 2026 至当前/未来账期，当期自动标记）
   function initPeriodSelect() {
     const sel = document.getElementById('periodSelect');
     if (!sel) return;
+    const autoInfo = Engine.getCurrentPeriodInfo();
+    const activeYear = parseInt(String(state.activePeriod).split('-')[0], 10) || autoInfo.budgetYear;
+    const maxYear = Math.max(2027, autoInfo.budgetYear + 1, activeYear);
     const periods = [];
-    for (let y = 2026; y <= 2027; y++) {
+    for (let y = 2026; y <= maxYear; y++) {
       for (let m = 1; m <= 12; m++) {
         const key = `${y}-${String(m).padStart(2, '0')}`;
         periods.push(Engine.getPeriodRange(key));
       }
     }
     sel.innerHTML = periods
-      .map((p) => `<option value="${p.periodKey}" ${p.periodKey === state.activePeriod ? 'selected' : ''}>${p.label}</option>`)
+      .map((p) => {
+        const curTag = p.periodKey === autoInfo.periodKey ? ' · 当期' : '';
+        return `<option value="${p.periodKey}" ${p.periodKey === state.activePeriod ? 'selected' : ''}>${p.label}${curTag}</option>`;
+      })
       .join('');
 
     sel.onchange = (e) => {
       state.activePeriod = e.target.value;
-      state.data.settings.currentPeriod = state.activePeriod;
-      saveData(false);
+      syncPeriodBarUI();
       render();
     };
 
     document.getElementById('prevPeriodBtn').onclick = () => stepPeriod(-1);
     document.getElementById('nextPeriodBtn').onclick = () => stepPeriod(1);
+    const jumpBtn = document.getElementById('jumpCurrentPeriodBtn');
+    if (jumpBtn) {
+      jumpBtn.onclick = () => {
+        state.activePeriod = getAutoPeriodKey();
+        initPeriodSelect();
+        syncPeriodBarUI();
+        render();
+        showToast('⚡ 已回到当前最新账期');
+      };
+    }
     document.getElementById('syncStatusBtn').onclick = () => {
       showToast('🔄 正在同步最新云端账本...');
       pullFromServer(true);
     };
+    syncPeriodBarUI();
   }
 
   function stepPeriod(delta) {
+    const autoInfo = Engine.getCurrentPeriodInfo();
+    const maxYear = Math.max(2027, autoInfo.budgetYear + 1);
     const [yStr, mStr] = state.activePeriod.split('-');
     let y = parseInt(yStr, 10);
     let m = parseInt(mStr, 10) + delta;
     if (m < 1) { m = 12; y -= 1; }
     if (m > 12) { m = 1; y += 1; }
     if (y < 2026) { y = 2026; m = 1; }
-    if (y > 2027) { y = 2027; m = 12; }
+    if (y > maxYear) { y = maxYear; m = 12; }
     state.activePeriod = `${y}-${String(m).padStart(2, '0')}`;
-    const sel = document.getElementById('periodSelect');
-    if (sel) sel.value = state.activePeriod;
+    syncPeriodBarUI();
     render();
   }
 
-  function updateTabBarUI() {
+  function updateTabBarUI(report) {
+    const alertCount = report && report.memberCardsReport ? report.memberCardsReport.alertCount : 0;
     document.querySelectorAll('.tab-item').forEach((btn) => {
       btn.classList.toggle('active', btn.dataset.tab === state.currentTab);
+      if (btn.dataset.tab === 'cards') {
+        const oldDot = btn.querySelector('.tab-alert-dot');
+        if (alertCount > 0 && !oldDot) {
+          const dot = document.createElement('span');
+          dot.className = 'tab-alert-dot';
+          btn.appendChild(dot);
+        } else if (alertCount === 0 && oldDot) {
+          oldDot.remove();
+        }
+      }
     });
   }
 
@@ -466,9 +621,11 @@
     const alloc = report.currentAllocation;
     const track = report.annualTracking;
     const annSum = report.annualSummary;
+    const cardRep = report.memberCardsReport;
     const remDays = calcPeriodRemainingDays(report.periodRange.endDate);
     const cPerDay = alloc.c.remainingPocket !== null ? Math.max(0, alloc.c.remainingPocket / remDays) : null;
     const qPerDay = alloc.q.remainingPocket !== null ? Math.max(0, alloc.q.remainingPocket / remDays) : null;
+    const hasFloorTopup = (alloc.c.goldenEggShortfall || 0) > 0 || (alloc.q.goldenEggShortfall || 0) > 0;
 
     const statusBadge = (level, text) => {
       const map = { ok: 'badge-ok', warn: 'badge-warn', danger: 'badge-danger', info: 'badge-info' };
@@ -513,6 +670,13 @@
         </div>
       </section>
 
+      ${cardRep && cardRep.alertCount > 0 ? `
+        <div class="alert-banner warn" style="cursor:pointer;display:flex;justify-content:space-between;align-items:center;" data-action="jumpCardsAlert">
+          <span>💳 <strong>会员储值卡保质期提醒：</strong>有 <strong>${cardRep.alertCount}</strong> 张卡即将到期或已过期，别忘了使用！</span>
+          <span style="font-weight:700;white-space:nowrap;">去查看 ›</span>
+        </div>
+      ` : ''}
+
       ${(!alloc.family.bothHaveSalary) ? `
         <div class="alert-banner warn">
           💡 <strong>本期分配提醒：</strong>${alloc.c.statusTip !== '正常' ? 'c ' + alloc.c.statusTip + '；' : ''}${alloc.q.statusTip !== '正常' ? 'q ' + alloc.q.statusTip : ''}
@@ -525,7 +689,7 @@
         <div class="card-header">
           <div>
             <div class="card-title">💰 本期工资分配明细</div>
-            <div class="card-subtitle">金蛋=(工资-必要月均)×50% · 另需转存=金蛋补足+许愿池月均</div>
+            <div class="card-subtitle">金蛋保底¥2,000（高于则按50%计） · 不足保底自动从零花钱补足</div>
           </div>
           <button class="btn-secondary" data-action="openPeriodOverride">期初/固定金蛋</button>
         </div>
@@ -552,7 +716,7 @@
               <td>${fm(alloc.family.necessaryMonthly)}</td>
             </tr>
             <tr>
-              <td>金蛋固定部分</td>
+              <td>金蛋固定部分 <span style="font-size:10px;color:#94a3b8;">(保底)</span></td>
               <td>${fm(alloc.c.fixedGoldenEgg)}</td>
               <td>${fm(alloc.q.fixedGoldenEgg)}</td>
               <td>${fm(alloc.family.fixedGoldenEgg)}</td>
@@ -589,6 +753,13 @@
             </tr>
           </tbody>
         </table>
+        ${hasFloorTopup ? `
+          <div class="alert-banner info" style="margin-top:10px;margin-bottom:0;font-size:11.5px;">
+            🥚 <strong>金蛋最低保底已生效：</strong>
+            ${(alloc.c.goldenEggShortfall || 0) > 0 ? `c 本期已从零花钱补入 <strong>¥${fm(alloc.c.goldenEggShortfall, false)}</strong> 凑足保底金蛋；` : ''}
+            ${(alloc.q.goldenEggShortfall || 0) > 0 ? `q 本期已从零花钱补入 <strong>¥${fm(alloc.q.goldenEggShortfall, false)}</strong> 凑足保底金蛋。` : ''}
+          </div>
+        ` : ''}
       </section>
 
       <!-- 本期实际消费与实际存入 -->
@@ -1508,16 +1679,418 @@
     `;
   }
 
+  // ==================== 6. 会员储值卡明细 (Membership & Stored-Value Cards) ====================
+  function renderCards(report) {
+    const cr = report.memberCardsReport;
+    const cf = state.cardForm;
+    const flt = state.cardFilter;
+
+    const ownerBadge = (owner) => {
+      if (owner === 'c') return `<span class="badge badge-c">👦 c</span>`;
+      if (owner === 'q') return `<span class="badge badge-q">👧 q</span>`;
+      if (owner === 'dengbao') return `<span class="badge badge-db">👶 噔宝</span>`;
+      return `<span class="badge badge-info">👨‍👩‍👦 家庭共用</span>`;
+    };
+
+    const typeLabel = (t) => (t === 'times' ? '计次卡' : t === 'period' ? '期限会员' : '储值卡');
+    const expiryBadgeClass = (lvl) =>
+      lvl === 'danger' ? 'badge-danger' : lvl === 'warn' ? 'badge-warn' : 'badge-ok';
+
+    const filteredCards = cr.cards.filter((c) => {
+      if (flt.type === 'active' && c.isInactive) return false;
+      if (flt.type === 'inactive' && !c.isInactive) return false;
+      if (flt.type === 'stored' && (c.cardType !== 'stored' || c.isInactive)) return false;
+      if (flt.type === 'times' && (c.cardType !== 'times' || c.isInactive)) return false;
+      if (flt.type === 'period' && (c.cardType !== 'period' || c.isInactive)) return false;
+      if (flt.type === 'alert' && !((c.isExpiringSoon || c.isExpired) && !c.isInactive)) return false;
+
+      if (flt.keyword && flt.keyword.trim()) {
+        const kw = flt.keyword.trim().toLowerCase();
+        const hay = `${c.name || ''} ${c.note || ''} ${c.price || ''} ${c.expiryDate || ''} ${c.openDate || ''}`.toLowerCase();
+        if (!hay.includes(kw)) return false;
+      }
+      return true;
+    });
+
+    const fmtCardAmt = (n) => fm(n, false);
+
+    return `
+      <!-- 储值卡总览卡片 -->
+      <section class="pocket-hero" style="background:linear-gradient(135deg, #0f766e 0%, #1e3a8a 100%);">
+        <div class="pocket-hero-top">
+          <div>
+            <div class="pocket-total-label" style="color:#ccfbf1;">💳 储值卡可用总余额（在用 ${cr.activeCount} 张）</div>
+            <div class="pocket-total-val" style="color:#fff;">¥ ${fmtCardAmt(cr.totalStoredRemaining)}</div>
+          </div>
+          <button type="button" class="btn-secondary" style="background:rgba(255,255,255,0.2);color:#fff;border:none;" data-action="toggleCardForm">
+            ${cf.open ? '收起表单' : '+ 新增会员卡'}
+          </button>
+        </div>
+        <div class="pocket-person-grid">
+          <div class="pocket-person-box">
+            <div class="pocket-person-header" style="color:#ccfbf1;">
+              <span>累计充值实付</span>
+              <span class="badge badge-info">共 ${cr.totalCount} 张</span>
+            </div>
+            <div class="pocket-person-val">¥ ${fmtCardAmt(cr.totalPaidPrice)}</div>
+            <div class="pocket-person-meta" style="color:#cbd5e1;">
+              记录价格、余额与保质期，充卡不再忘
+            </div>
+          </div>
+          <div class="pocket-person-box">
+            <div class="pocket-person-header" style="color:#ccfbf1;">
+              <span>保质期状态</span>
+              <span class="badge ${cr.alertCount > 0 ? 'badge-warn' : 'badge-ok'}">${cr.alertCount > 0 ? cr.alertCount + '张需关注' : '全部正常'}</span>
+            </div>
+            <div class="pocket-person-val">${cr.expiringSoonCards.length} <span style="font-size:13px;font-weight:500;">张临期</span></div>
+            <div class="pocket-person-meta" style="color:#cbd5e1;">
+              30天内到期: ${cr.expiringSoonCards.length} 张 | 已过期: ${cr.expiredActiveCards.length} 张
+            </div>
+          </div>
+        </div>
+      </section>
+
+      ${
+        cf.open
+          ? `
+        <!-- 新增 / 编辑会员储值卡表单 -->
+        <section class="card" style="border:2px solid #0d9488;">
+          <div class="card-header">
+            <div class="card-title">${cf.editingId ? '✏️ 编辑会员储值卡' : '💳 新增会员储值卡'}</div>
+            <button type="button" class="btn-secondary" data-action="cancelCardForm">取消</button>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">卡片类型</label>
+            <div class="segmented">
+              <button type="button" class="seg-btn ${cf.cardType === 'stored' ? 'active' : ''}" data-cftype="stored">💰 储值余额卡</button>
+              <button type="button" class="seg-btn ${cf.cardType === 'times' ? 'active' : ''}" data-cftype="times">🔢 计次/课时卡</button>
+              <button type="button" class="seg-btn ${cf.cardType === 'period' ? 'active' : ''}" data-cftype="period">📅 期限会员卡</button>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">卡名称 / 商家店名（必填）</label>
+            <input type="text" class="form-input" id="cfNameInput" placeholder="例如：山姆会员卡、楼下理发店充值卡、洗车10次卡" value="${escHtml(cf.name)}" />
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">归属成员</label>
+            <div class="chip-grid">
+              <button type="button" class="chip ${cf.owner === 'family' ? 'active' : ''}" data-cfowner="family">👨‍👩‍👦 家庭共用</button>
+              <button type="button" class="chip ${cf.owner === 'c' ? 'active' : ''}" data-cfowner="c">👦 c（你）</button>
+              <button type="button" class="chip ${cf.owner === 'q' ? 'active' : ''}" data-cfowner="q">👧 q（她）</button>
+              <button type="button" class="chip ${cf.owner === 'dengbao' ? 'active' : ''}" data-cfowner="dengbao">👶 噔宝</button>
+            </div>
+          </div>
+
+          ${
+            cf.cardType === 'stored'
+              ? `
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+              <div class="form-group">
+                <label class="form-label">充值实付价格（元）</label>
+                <input type="number" step="0.01" class="form-input" id="cfPriceInput" placeholder="实付多少钱，如 500" value="${escHtml(cf.price)}" />
+              </div>
+              <div class="form-group">
+                <label class="form-label">卡内到账面额（元）</label>
+                <input type="number" step="0.01" class="form-input" id="cfTotalInput" placeholder="留空同实付；充500送100填600" value="${escHtml(cf.totalValue)}" />
+              </div>
+            </div>
+            <div class="form-group">
+              <label class="form-label">当前卡内剩余金额（元，新卡留空则默认等于到账面额）</label>
+              <input type="number" step="0.01" class="form-input" id="cfRemInput" placeholder="若录入旧卡可填当前剩余余额" value="${escHtml(cf.remainingValue)}" />
+            </div>
+          `
+              : cf.cardType === 'times'
+              ? `
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+              <div class="form-group">
+                <label class="form-label">办卡实付价格（元）</label>
+                <input type="number" step="0.01" class="form-input" id="cfPriceInput" placeholder="实付总价，如 380" value="${escHtml(cf.price)}" />
+              </div>
+              <div class="form-group">
+                <label class="form-label">总次数（次）</label>
+                <input type="number" step="1" class="form-input" id="cfTotalInput" placeholder="如 10" value="${escHtml(cf.totalValue)}" />
+              </div>
+            </div>
+            <div class="form-group">
+              <label class="form-label">当前剩余次数（次，新卡留空默认等于总次数）</label>
+              <input type="number" step="1" class="form-input" id="cfRemInput" placeholder="若录入旧卡可填当前剩余次数" value="${escHtml(cf.remainingValue)}" />
+            </div>
+          `
+              : `
+            <div class="form-group">
+              <label class="form-label">办卡/开通实付价格（元）</label>
+              <input type="number" step="0.01" class="form-input" id="cfPriceInput" placeholder="例如：260" value="${escHtml(cf.price)}" />
+            </div>
+          `
+          }
+
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+            <div class="form-group">
+              <label class="form-label">充值/开卡日期</label>
+              <input type="date" class="form-input" id="cfOpenDateInput" value="${escHtml(cf.openDate)}" />
+            </div>
+            <div class="form-group">
+              <label class="form-label">保质期 / 有效期至</label>
+              <input type="date" class="form-input" id="cfExpiryDateInput" value="${escHtml(cf.expiryDate)}" />
+            </div>
+          </div>
+
+          <div class="form-group" style="margin-top:-6px;">
+            <label class="form-label">快捷设置保质期（基于开卡日自动推算）</label>
+            <div class="chip-grid">
+              <button type="button" class="chip ${cf.expiryDate === '' ? 'active' : ''}" data-cfexp="none">♾️ 长期有效</button>
+              <button type="button" class="chip" data-cfexp="1">+1个月</button>
+              <button type="button" class="chip" data-cfexp="3">+3个月</button>
+              <button type="button" class="chip" data-cfexp="6">+半年</button>
+              <button type="button" class="chip" data-cfexp="12">+1年</button>
+              <button type="button" class="chip" data-cfexp="24">+2年</button>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">绑定手机号 / 门店 / 折扣说明（选填）</label>
+            <input type="text" class="form-input" id="cfNoteInput" placeholder="例如：报q手机号138xxxx、剪发8折、节假日通用..." value="${escHtml(cf.note)}" />
+          </div>
+
+          ${
+            !cf.editingId
+              ? `
+            <div class="form-group" style="background:#f8fafc;padding:10px 12px;border-radius:10px;border:1px solid #e2e8f0;">
+              <label style="display:flex;align-items:center;gap:8px;font-size:12.5px;font-weight:700;cursor:pointer;">
+                <input type="checkbox" id="cfSyncLedgerChk" ${cf.syncToLedger ? 'checked' : ''} />
+                <span>同时把本次办卡实付金额记入账单流水（补录以前的旧卡请勿勾选）</span>
+              </label>
+              ${
+                cf.syncToLedger
+                  ? `
+                <div style="margin-top:10px;display:flex;flex-wrap:wrap;gap:6px;align-items:center;">
+                  <span style="font-size:11.5px;color:#64748b;">记入：</span>
+                  <button type="button" class="chip ${cf.ledgerRole === 'c' ? 'active' : ''}" data-cf-lrole="c">👦 c记账</button>
+                  <button type="button" class="chip ${cf.ledgerRole === 'q' ? 'active' : ''}" data-cf-lrole="q">👧 q记账</button>
+                  <button type="button" class="chip ${cf.ledgerRole === 'dengbao' ? 'active' : ''}" data-cf-lrole="dengbao">👶 噔宝支出</button>
+                  ${
+                    cf.ledgerRole !== 'dengbao'
+                      ? `
+                    <span style="font-size:11.5px;color:#64748b;margin-left:4px;">用途：</span>
+                    <button type="button" class="chip ${cf.ledgerPurpose === '日常' ? 'active' : ''}" data-cf-lpurp="日常">日常</button>
+                    <button type="button" class="chip ${cf.ledgerPurpose === '必要开支' ? 'active' : ''}" data-cf-lpurp="必要开支">必要开支</button>
+                    <button type="button" class="chip ${cf.ledgerPurpose === '许愿池' ? 'active' : ''}" data-cf-lpurp="许愿池">许愿池</button>
+                  `
+                      : ''
+                  }
+                </div>
+              `
+                  : ''
+              }
+            </div>
+          `
+              : ''
+          }
+
+          <button type="button" class="btn-primary" id="saveCardBtn">
+            ${cf.editingId ? '💾 保存卡片修改' : '✅ 确认存入会员卡包'}
+          </button>
+        </section>
+      `
+          : ''
+      }
+
+      <!-- 会员储值卡列表 -->
+      <section class="card">
+        <div class="card-header">
+          <div>
+            <div class="card-title">🗂️ 会员储值卡明细 (${filteredCards.length}张)</div>
+            <div class="card-subtitle">支持扣减余额/划次、续充延期、到期自动预警与云同步</div>
+          </div>
+          ${!cf.open ? `<button type="button" class="btn-secondary" data-action="toggleCardForm">+ 记新卡</button>` : ''}
+        </div>
+
+        <div class="search-bar-wrap">
+          <span class="search-icon">🔍</span>
+          <input type="text" class="search-input" id="cardSearchInput" placeholder="搜索店名、卡名、手机号备注..." value="${escHtml(flt.keyword)}" />
+        </div>
+
+        <div class="chip-grid" style="margin-bottom:14px;">
+          ${[
+            ['active', `全部在用 (${cr.activeCount})`],
+            ['stored', '💰 储值卡'],
+            ['times', '🔢 计次卡'],
+            ['period', '📅 期限会员'],
+            ['alert', `⚠️ 临期/过期 (${cr.alertCount})`],
+            ['inactive', `已用完/归档 (${cr.inactiveCount})`]
+          ]
+            .map(
+              ([k, label]) =>
+                `<button type="button" class="chip ${flt.type === k ? 'active' : ''}" data-cflt="${k}">${label}</button>`
+            )
+            .join('')}
+        </div>
+
+        ${
+          filteredCards.length === 0
+            ? `
+          <div style="text-align:center;padding:32px 12px;color:#94a3b8;font-size:13px;">
+            <div style="font-size:32px;margin-bottom:8px;">💳</div>
+            <div>当前分类下还没有会员储值卡记录</div>
+            <div style="margin-top:10px;">
+              <button type="button" class="btn-secondary" data-action="toggleCardForm">+ 添加第一张储值卡/会员卡</button>
+            </div>
+          </div>
+        `
+            : filteredCards
+                .map((c) => {
+                  const isExp = !!state.expandedCardIds[c.id];
+                  const cardCls = c.isInactive
+                    ? 'inactive'
+                    : c.isExpired
+                    ? 'expired'
+                    : c.isExpiringSoon
+                    ? 'urgent'
+                    : '';
+
+                  let mainValHtml = '';
+                  let rightMetaHtml = '';
+                  if (c.cardType === 'stored') {
+                    mainValHtml = `<div class="mcard-rem-big">余额 ¥${fmtCardAmt(c.remainingValue)}</div>`;
+                    rightMetaHtml = `
+                      <div>实付价格 <strong>¥${fmtCardAmt(c.price)}</strong>${c.totalValue !== c.price ? ` · 面额 ¥${fmtCardAmt(c.totalValue)}` : ''}</div>
+                      ${c.valueHint ? `<div style="color:#0f766e;font-weight:600;">${escHtml(c.valueHint)}</div>` : ''}
+                    `;
+                  } else if (c.cardType === 'times') {
+                    mainValHtml = `<div class="mcard-rem-big">剩余 ${fmtCardAmt(c.remainingValue)} 次</div>`;
+                    rightMetaHtml = `
+                      <div>实付价格 <strong>¥${fmtCardAmt(c.price)}</strong> · 共 ${fmtCardAmt(c.totalValue)} 次</div>
+                      ${c.valueHint ? `<div style="color:#0f766e;font-weight:600;">${escHtml(c.valueHint)}</div>` : ''}
+                    `;
+                  } else {
+                    mainValHtml = `<div class="mcard-rem-big" style="font-size:17px;">${c.isExpired ? '已到期' : '会员有效中'}</div>`;
+                    rightMetaHtml = `
+                      <div>开通价格 <strong>¥${fmtCardAmt(c.price)}</strong></div>
+                      ${c.valueHint ? `<div style="color:#0f766e;font-weight:600;">${escHtml(c.valueHint)}</div>` : ''}
+                    `;
+                  }
+
+                  const progLevel = c.isExpired ? 'danger' : c.isExpiringSoon ? 'warn' : 'ok';
+
+                  return `
+                  <div class="mcard-item ${cardCls}">
+                    <div class="mcard-head">
+                      <div class="mcard-title-row">
+                        <span class="mcard-name">${escHtml(c.name)}</span>
+                        ${ownerBadge(c.owner)}
+                        <span class="badge badge-info">${typeLabel(c.cardType)}</span>
+                        ${c.isDepleted ? `<span class="badge badge-danger">已用完</span>` : ''}
+                        ${c.archived ? `<span class="badge badge-info">已归档</span>` : ''}
+                      </div>
+                      <span class="badge ${expiryBadgeClass(c.expiryLevel)}" style="flex-shrink:0;">${c.expiryBadgeText}</span>
+                    </div>
+
+                    <div class="mcard-main-nums">
+                      ${mainValHtml}
+                      <div class="mcard-price-meta">${rightMetaHtml}</div>
+                    </div>
+
+                    <div class="progress-track" style="height:7px;">
+                      <div class="progress-fill ${progLevel}" style="width:${c.remainPct}%"></div>
+                    </div>
+
+                    <div class="mcard-meta-lines">
+                      <div>📅 充卡日: ${c.openDate || '--'} &nbsp;|&nbsp; ⏳ 保质期: <strong>${c.expiryDate ? c.expiryDate : '长期有效'}</strong></div>
+                      ${c.note ? `<div>📌 备注: ${escHtml(c.note)}</div>` : ''}
+                    </div>
+
+                    <div class="mcard-actions">
+                      ${
+                        c.cardType === 'stored' && !c.archived
+                          ? `<button type="button" class="mcard-btn-use" data-card-use="${c.id}">💸 扣消费</button>`
+                          : ''
+                      }
+                      ${
+                        c.cardType === 'times' && !c.archived
+                          ? `<button type="button" class="mcard-btn-use" data-card-use="${c.id}">✂️ 划次消费</button>`
+                          : ''
+                      }
+                      <button type="button" class="mcard-btn-topup" data-card-topup="${c.id}">
+                        ${c.cardType === 'period' ? '🔄 续费延期' : '➕ 续充/延期'}
+                      </button>
+                      <button type="button" class="btn-secondary" style="padding:4px 8px;font-size:11px;" data-card-logs="${c.id}">
+                        📋 记录(${c.logs.length})
+                      </button>
+                      <button type="button" class="btn-secondary" style="padding:4px 8px;font-size:11px;" data-card-edit="${c.id}">编辑</button>
+                      <button type="button" class="btn-secondary" style="padding:4px 8px;font-size:11px;" data-card-archive="${c.id}">
+                        ${c.archived ? '恢复' : '归档'}
+                      </button>
+                      <button type="button" class="btn-danger-sm" data-card-del="${c.id}">删除</button>
+                    </div>
+
+                    ${
+                      isExp
+                        ? `
+                      <div class="mcard-logs-box">
+                        <div style="font-weight:700;margin-bottom:4px;color:#334155;">📋 充值与使用记录</div>
+                        ${
+                          c.logs.length === 0
+                            ? `<div>暂无变动记录</div>`
+                            : c.logs
+                                .slice()
+                                .reverse()
+                                .map((lg) => {
+                                  const unit = c.cardType === 'times' ? '次' : '元';
+                                  const sign = lg.delta > 0 ? '+' : '';
+                                  return `
+                                  <div class="mcard-log-row">
+                                    <span>${lg.date || ''} · ${escHtml(lg.note || lg.action || '')}</span>
+                                    <span style="font-weight:700;color:${lg.delta < 0 ? '#ef4444' : '#0f766e'};">
+                                      ${lg.delta !== null && lg.delta !== undefined ? `${sign}${fmtCardAmt(lg.delta)}${unit}` : ''}
+                                      ${lg.afterRemaining !== undefined && lg.afterRemaining !== null && c.cardType !== 'period' ? ` (余${fmtCardAmt(lg.afterRemaining)}${unit})` : ''}
+                                    </span>
+                                  </div>
+                                `;
+                                })
+                                .join('')
+                        }
+                      </div>
+                    `
+                        : ''
+                    }
+                  </div>
+                `;
+                })
+                .join('')
+        }
+
+        ${
+          cr.totalCount > 0
+            ? `
+          <div style="margin-top:12px;">
+            <button type="button" class="btn-secondary" style="width:100%;" data-action="exportCardsCsv">
+              📊 导出会员储值卡明细表 (.csv)
+            </button>
+          </div>
+        `
+            : ''
+        }
+      </section>
+    `;
+  }
+
   // ==================== 主渲染与事件绑定 ====================
   function render() {
     const report = Engine.computeFullReport(state.data, state.activePeriod);
     const main = document.getElementById('mainView');
     if (!main) return;
 
+    updateTabBarUI(report);
+    syncPeriodBarUI();
+
     if (state.currentTab === 'dashboard') main.innerHTML = renderDashboard(report);
     else if (state.currentTab === 'add') main.innerHTML = renderAdd(report);
     else if (state.currentTab === 'ledger') main.innerHTML = renderLedger(report);
     else if (state.currentTab === 'dengbao') main.innerHTML = renderDengbao(report);
+    else if (state.currentTab === 'cards') main.innerHTML = renderCards(report);
     else if (state.currentTab === 'budget') main.innerHTML = renderBudget(report);
 
     bindViewEvents(report);
@@ -2176,7 +2749,7 @@
             try {
               const obj = JSON.parse(ev.target.result);
               if (obj && obj.transactions && obj.necessaryBudgets) {
-                state.data = obj;
+                state.data = normalizeLoadedData(obj);
                 saveData();
                 render();
                 showToast('✅ 账本导入成功');
@@ -2196,10 +2769,464 @@
     main.querySelectorAll('[data-action="resetInitial"]').forEach((btn) => {
       btn.onclick = () => {
         if (!confirm('确定要重置为 Excel 初始预置数据吗？当前新增的未备份修改将被覆盖。')) return;
-        state.data = JSON.parse(JSON.stringify(Engine.INITIAL_DATA));
+        state.data = normalizeLoadedData(JSON.parse(JSON.stringify(Engine.INITIAL_DATA)));
         saveData();
         render();
         showToast('已恢复为 Excel 初始账本数据');
+      };
+    });
+
+    // ==================== 会员储值卡明细交互事件 ====================
+    function syncCardFormFromDOM() {
+      const cf = state.cardForm;
+      const nameEl = document.getElementById('cfNameInput');
+      const priceEl = document.getElementById('cfPriceInput');
+      const totalEl = document.getElementById('cfTotalInput');
+      const remEl = document.getElementById('cfRemInput');
+      const openEl = document.getElementById('cfOpenDateInput');
+      const expEl = document.getElementById('cfExpiryDateInput');
+      const noteEl = document.getElementById('cfNoteInput');
+      if (nameEl) cf.name = nameEl.value;
+      if (priceEl) cf.price = priceEl.value;
+      if (totalEl) cf.totalValue = totalEl.value;
+      if (remEl) cf.remainingValue = remEl.value;
+      if (openEl) cf.openDate = openEl.value;
+      if (expEl) cf.expiryDate = expEl.value;
+      if (noteEl) cf.note = noteEl.value;
+    }
+
+    main.querySelectorAll('[data-action="jumpCardsAlert"]').forEach((el) => {
+      el.onclick = () => {
+        state.currentTab = 'cards';
+        state.cardFilter.type = 'alert';
+        render();
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+      };
+    });
+
+    main.querySelectorAll('[data-action="toggleCardForm"]').forEach((btn) => {
+      btn.onclick = () => {
+        if (state.cardForm.open) {
+          state.cardForm = createEmptyCardForm();
+        } else {
+          state.cardForm = { ...createEmptyCardForm(), open: true };
+        }
+        render();
+      };
+    });
+
+    main.querySelectorAll('[data-action="cancelCardForm"]').forEach((btn) => {
+      btn.onclick = () => {
+        state.cardForm = createEmptyCardForm();
+        render();
+      };
+    });
+
+    ['cfNameInput', 'cfPriceInput', 'cfTotalInput', 'cfRemInput', 'cfOpenDateInput', 'cfExpiryDateInput', 'cfNoteInput'].forEach((id) => {
+      const el = document.getElementById(id);
+      if (el) {
+        el.oninput = syncCardFormFromDOM;
+        el.onchange = syncCardFormFromDOM;
+      }
+    });
+
+    main.querySelectorAll('[data-cftype]').forEach((btn) => {
+      btn.onclick = () => {
+        syncCardFormFromDOM();
+        state.cardForm.cardType = btn.dataset.cftype;
+        render();
+      };
+    });
+
+    main.querySelectorAll('[data-cfowner]').forEach((btn) => {
+      btn.onclick = () => {
+        syncCardFormFromDOM();
+        state.cardForm.owner = btn.dataset.cfowner;
+        if (state.cardForm.owner === 'c' || state.cardForm.owner === 'q' || state.cardForm.owner === 'dengbao') {
+          state.cardForm.ledgerRole = state.cardForm.owner;
+        }
+        render();
+      };
+    });
+
+    main.querySelectorAll('[data-cfexp]').forEach((btn) => {
+      btn.onclick = () => {
+        syncCardFormFromDOM();
+        const val = btn.dataset.cfexp;
+        if (val === 'none') {
+          state.cardForm.expiryDate = '';
+        } else {
+          const months = parseInt(val, 10) || 12;
+          state.cardForm.expiryDate = addMonthsToDateStr(state.cardForm.openDate || getTodayStr(), months);
+        }
+        render();
+      };
+    });
+
+    const syncChk = document.getElementById('cfSyncLedgerChk');
+    if (syncChk) {
+      syncChk.onchange = (e) => {
+        syncCardFormFromDOM();
+        state.cardForm.syncToLedger = e.target.checked;
+        render();
+      };
+    }
+
+    main.querySelectorAll('[data-cf-lrole]').forEach((btn) => {
+      btn.onclick = () => {
+        syncCardFormFromDOM();
+        state.cardForm.ledgerRole = btn.dataset.cfLrole;
+        render();
+      };
+    });
+
+    main.querySelectorAll('[data-cf-lpurp]').forEach((btn) => {
+      btn.onclick = () => {
+        syncCardFormFromDOM();
+        state.cardForm.ledgerPurpose = btn.dataset.cfLpurp;
+        render();
+      };
+    });
+
+    const saveCardBtn = document.getElementById('saveCardBtn');
+    if (saveCardBtn) {
+      saveCardBtn.onclick = () => {
+        syncCardFormFromDOM();
+        const cf = state.cardForm;
+        const cleanName = (cf.name || '').trim();
+        if (!cleanName) {
+          alert('请填写会员储值卡名称或商家店名！');
+          return;
+        }
+        const priceNum = Number(cf.price || 0);
+        if (isNaN(priceNum) || priceNum < 0) {
+          alert('请填写有效的实付价格！');
+          return;
+        }
+
+        let totalVal = priceNum;
+        let remVal = priceNum;
+        if (cf.cardType === 'stored') {
+          totalVal = cf.totalValue !== '' && cf.totalValue !== null ? Number(cf.totalValue) : priceNum;
+          if (isNaN(totalVal) || totalVal < 0) {
+            alert('请填写有效的卡内到账面额！');
+            return;
+          }
+          remVal = cf.remainingValue !== '' && cf.remainingValue !== null ? Number(cf.remainingValue) : totalVal;
+          if (isNaN(remVal) || remVal < 0) {
+            alert('请填写有效的剩余金额！');
+            return;
+          }
+        } else if (cf.cardType === 'times') {
+          totalVal = Number(cf.totalValue);
+          if (!cf.totalValue || isNaN(totalVal) || totalVal <= 0) {
+            alert('计次卡请填写有效的总次数！');
+            return;
+          }
+          remVal = cf.remainingValue !== '' && cf.remainingValue !== null ? Number(cf.remainingValue) : totalVal;
+          if (isNaN(remVal) || remVal < 0) {
+            alert('请填写有效的剩余次数！');
+            return;
+          }
+        } else {
+          totalVal = priceNum;
+          remVal = priceNum;
+        }
+
+        state.data.memberCards = Array.isArray(state.data.memberCards) ? state.data.memberCards : [];
+        const nowIso = new Date().toISOString();
+
+        if (cf.editingId) {
+          const target = state.data.memberCards.find((x) => x.id === cf.editingId);
+          if (target) {
+            target.name = cleanName;
+            target.cardType = cf.cardType;
+            target.owner = cf.owner;
+            target.price = Engine.round2(priceNum);
+            target.totalValue = Engine.round2(totalVal);
+            target.remainingValue = Engine.round2(remVal);
+            target.openDate = cf.openDate || getTodayStr();
+            target.expiryDate = cf.expiryDate || '';
+            target.note = (cf.note || '').trim();
+            target.updatedAt = nowIso;
+          }
+          showToast('✅ 已保存会员储值卡修改');
+        } else {
+          const newCard = {
+            id: 'card_' + Date.now(),
+            name: cleanName,
+            cardType: cf.cardType,
+            owner: cf.owner,
+            price: Engine.round2(priceNum),
+            totalValue: Engine.round2(totalVal),
+            remainingValue: Engine.round2(remVal),
+            openDate: cf.openDate || getTodayStr(),
+            expiryDate: cf.expiryDate || '',
+            note: (cf.note || '').trim(),
+            archived: false,
+            updatedAt: nowIso,
+            logs: [
+              {
+                id: 'clog_' + Date.now(),
+                date: cf.openDate || getTodayStr(),
+                action: '开卡充值',
+                delta: cf.cardType === 'period' ? null : Engine.round2(remVal),
+                paidPrice: Engine.round2(priceNum),
+                afterRemaining: cf.cardType === 'period' ? null : Engine.round2(remVal),
+                note: `首次办卡（实付 ¥${Engine.round2(priceNum)}）`
+              }
+            ]
+          };
+          state.data.memberCards.push(newCard);
+
+          // 可选：同步记入一笔家庭账单支出流水
+          if (cf.syncToLedger && priceNum > 0) {
+            const txDate = cf.openDate || getTodayStr();
+            const expText = cf.expiryDate ? `有效期至${cf.expiryDate}` : '长期有效';
+            if (cf.ledgerRole === 'dengbao') {
+              state.data.transactions.dengbao.push({
+                id: 'tx_' + Date.now(),
+                date: txDate,
+                amount: Engine.round2(priceNum),
+                payer: savedPrefRole === 'q' ? 'q' : 'c',
+                type: '支出',
+                category: '孩子用品',
+                note: `[办卡] ${cleanName} (${expText})`
+              });
+            } else {
+              const role = cf.ledgerRole === 'q' ? 'q' : 'c';
+              state.data.transactions[role].push({
+                id: 'tx_' + Date.now(),
+                date: txDate,
+                amount: Engine.round2(priceNum),
+                type: '支出',
+                purpose: cf.ledgerPurpose || '日常',
+                category: '订阅会员',
+                note: `[办卡] ${cleanName} (${expText})`
+              });
+            }
+          }
+          showToast('💳 已存入会员储值卡明细！');
+        }
+
+        state.cardForm = createEmptyCardForm();
+        saveData();
+        render();
+      };
+    }
+
+    const cardSearchEl = document.getElementById('cardSearchInput');
+    if (cardSearchEl) {
+      cardSearchEl.oninput = (e) => {
+        state.cardFilter.keyword = e.target.value;
+        render();
+        const nextEl = document.getElementById('cardSearchInput');
+        if (nextEl) {
+          nextEl.focus();
+          nextEl.setSelectionRange(nextEl.value.length, nextEl.value.length);
+        }
+      };
+    }
+
+    main.querySelectorAll('[data-cflt]').forEach((btn) => {
+      btn.onclick = () => {
+        state.cardFilter.type = btn.dataset.cflt;
+        render();
+      };
+    });
+
+    // 扣减储值余额 / 划次消费
+    main.querySelectorAll('[data-card-use]').forEach((btn) => {
+      btn.onclick = () => {
+        const id = btn.dataset.cardUse;
+        const card = (state.data.memberCards || []).find((x) => x.id === id);
+        if (!card) return;
+        const isTimes = card.cardType === 'times';
+        const unit = isTimes ? '次' : '元';
+        const rawVal = prompt(
+          `${isTimes ? '✂️ 划次消费' : '💸 储值卡扣款'} — 【${card.name}】\n当前剩余: ${card.remainingValue} ${unit}\n请输入本次消费扣除${isTimes ? '次数' : '金额（元）'}：`,
+          isTimes ? '1' : ''
+        );
+        if (rawVal === null || rawVal.trim() === '') return;
+        const deduct = evalMathAmount(rawVal);
+        if (isNaN(deduct) || deduct <= 0) {
+          alert('请输入大于 0 的有效数值！');
+          return;
+        }
+        const memo = prompt('本次使用备注（选填，直接点确定可跳过）：', '') || '';
+        card.remainingValue = Engine.round2(Math.max(0, (Number(card.remainingValue) || 0) - deduct));
+        card.updatedAt = new Date().toISOString();
+        card.logs = Array.isArray(card.logs) ? card.logs : [];
+        card.logs.push({
+          id: 'clog_' + Date.now(),
+          date: getTodayStr(),
+          action: isTimes ? '划次消费' : '扣款消费',
+          delta: -Engine.round2(deduct),
+          afterRemaining: card.remainingValue,
+          note: memo.trim() || (isTimes ? '划次消费' : '卡内扣款')
+        });
+        saveData();
+        render();
+        showToast(`✅ 已扣除 ${deduct}${unit}，当前剩余 ${card.remainingValue}${unit}`);
+      };
+    });
+
+    // 续充 / 续期延期
+    main.querySelectorAll('[data-card-topup]').forEach((btn) => {
+      btn.onclick = () => {
+        const id = btn.dataset.cardTopup;
+        const card = (state.data.memberCards || []).find((x) => x.id === id);
+        if (!card) return;
+        const paidRaw = prompt(`➕ 【${card.name}】续充/续费\n请输入本次续充实付价格（元，仅免费延期可填 0）：`, '0');
+        if (paidRaw === null) return;
+        const paid = evalMathAmount(paidRaw) || 0;
+        if (paid < 0) {
+          alert('实付价格不能为负数');
+          return;
+        }
+
+        let addVal = 0;
+        if (card.cardType === 'stored') {
+          const addRaw = prompt('请输入本次卡内新增到账金额（元）：', String(paid || ''));
+          if (addRaw === null) return;
+          addVal = evalMathAmount(addRaw) || 0;
+        } else if (card.cardType === 'times') {
+          const addRaw = prompt('请输入本次新增次数（次）：', '10');
+          if (addRaw === null) return;
+          addVal = evalMathAmount(addRaw) || 0;
+        }
+
+        const suggestedExp = card.expiryDate
+          ? addMonthsToDateStr(card.expiryDate > getTodayStr() ? card.expiryDate : getTodayStr(), 12)
+          : '';
+        const newExp = prompt(
+          `设置更新后的保质期/有效期至（格式 YYYY-MM-DD，清空表示长期有效）：`,
+          suggestedExp
+        );
+        if (newExp !== null) {
+          card.expiryDate = newExp.trim();
+        }
+
+        card.price = Engine.round2((Number(card.price) || 0) + paid);
+        if (card.cardType !== 'period' && addVal > 0) {
+          card.totalValue = Engine.round2((Number(card.totalValue) || 0) + addVal);
+          card.remainingValue = Engine.round2((Number(card.remainingValue) || 0) + addVal);
+        }
+        card.archived = false;
+        card.updatedAt = new Date().toISOString();
+        card.logs = Array.isArray(card.logs) ? card.logs : [];
+        card.logs.push({
+          id: 'clog_' + Date.now(),
+          date: getTodayStr(),
+          action: '续充延期',
+          delta: card.cardType === 'period' ? null : Engine.round2(addVal),
+          paidPrice: Engine.round2(paid),
+          afterRemaining: card.cardType === 'period' ? null : card.remainingValue,
+          note: `续充实付 ¥${Engine.round2(paid)}${card.expiryDate ? ' · 有效期至 ' + card.expiryDate : ''}`
+        });
+        saveData();
+        render();
+        showToast('💳 已完成续充与保质期更新！');
+      };
+    });
+
+    main.querySelectorAll('[data-card-logs]').forEach((btn) => {
+      btn.onclick = () => {
+        const id = btn.dataset.cardLogs;
+        state.expandedCardIds[id] = !state.expandedCardIds[id];
+        render();
+      };
+    });
+
+    main.querySelectorAll('[data-card-edit]').forEach((btn) => {
+      btn.onclick = () => {
+        const id = btn.dataset.cardEdit;
+        const card = (state.data.memberCards || []).find((x) => x.id === id);
+        if (!card) return;
+        state.cardForm = {
+          open: true,
+          editingId: card.id,
+          name: card.name || '',
+          cardType: card.cardType || 'stored',
+          owner: card.owner || 'family',
+          price: card.price ?? '',
+          totalValue: card.totalValue ?? '',
+          remainingValue: card.remainingValue ?? '',
+          openDate: card.openDate || getTodayStr(),
+          expiryDate: card.expiryDate || '',
+          note: card.note || '',
+          syncToLedger: false,
+          ledgerRole: 'c',
+          ledgerPurpose: '日常'
+        };
+        render();
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+      };
+    });
+
+    main.querySelectorAll('[data-card-archive]').forEach((btn) => {
+      btn.onclick = () => {
+        const id = btn.dataset.cardArchive;
+        const card = (state.data.memberCards || []).find((x) => x.id === id);
+        if (!card) return;
+        card.archived = !card.archived;
+        card.updatedAt = new Date().toISOString();
+        saveData();
+        render();
+        showToast(card.archived ? '已归档该卡片' : '已恢复该卡片至在用列表');
+      };
+    });
+
+    main.querySelectorAll('[data-card-del]').forEach((btn) => {
+      btn.onclick = () => {
+        const id = btn.dataset.cardDel;
+        if (!confirm('确定要删除这张会员储值卡记录吗？')) return;
+        state.data.deletedCardIds = state.data.deletedCardIds || [];
+        if (!state.data.deletedCardIds.includes(id)) {
+          state.data.deletedCardIds.push(id);
+        }
+        state.data.memberCards = (state.data.memberCards || []).filter((x) => x.id !== id);
+        saveData();
+        render();
+        showToast('已删除会员储值卡');
+      };
+    });
+
+    main.querySelectorAll('[data-action="exportCardsCsv"]').forEach((btn) => {
+      btn.onclick = () => {
+        const cr = report.memberCardsReport;
+        const rows = [
+          ['卡片名称', '卡类型', '归属人', '实付价格(元)', '总额度/总次数', '当前剩余', '充卡日期', '保质期/有效期至', '状态', '备注说明']
+        ];
+        const ownerMap = { family: '家庭共用', c: 'c', q: 'q', dengbao: '噔宝' };
+        const typeMap = { stored: '储值余额卡', times: '计次卡', period: '期限会员卡' };
+        cr.cards.forEach((c) => {
+          rows.push([
+            c.name,
+            typeMap[c.cardType] || '储值卡',
+            ownerMap[c.owner] || '家庭共用',
+            c.price,
+            c.cardType === 'period' ? '--' : c.totalValue,
+            c.cardType === 'period' ? '--' : c.remainingValue,
+            c.openDate || '',
+            c.expiryDate || '长期有效',
+            c.isDepleted ? '已用完' : c.expiryBadgeText,
+            c.note || ''
+          ]);
+        });
+        const csvContent =
+          '\uFEFF' +
+          rows
+            .map((r) => r.map((cell) => `"${String(cell ?? '').replace(/"/g, '""')}"`).join(','))
+            .join('\r\n');
+        const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `家庭会员储值卡明细_${getTodayStr()}.csv`;
+        a.click();
+        URL.revokeObjectURL(url);
+        showToast('📊 已导出会员储值卡明细 (.csv)');
       };
     });
   }
@@ -2208,7 +3235,6 @@
   document.querySelectorAll('.tab-item').forEach((btn) => {
     btn.onclick = () => {
       state.currentTab = btn.dataset.tab;
-      updateTabBarUI();
       render();
       window.scrollTo({ top: 0, behavior: 'smooth' });
     };
@@ -2255,12 +3281,21 @@
     }
   }
 
+  // 当手机唤醒或切回页面时，自动检测是否跨月进入新账期并刷新同步
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') {
+      checkAndAutoAdvancePeriod();
+      if (state.cloudCfg.unlocked) pullFromServer();
+    }
+  });
+
   // 初始化启动
   initPeriodSelect();
   updateSyncHeader();
   render();
   initLockScreen();
   setInterval(() => {
+    checkAndAutoAdvancePeriod();
     if (state.cloudCfg.unlocked) pullFromServer();
   }, 8000);
 })();

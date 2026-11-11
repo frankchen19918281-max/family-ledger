@@ -2,10 +2,22 @@ const app = getApp();
 const Engine = require('../../utils/engine.js');
 const fm = Engine.formatMoney;
 
+function addMonthsStr(baseStr, months) {
+  const src = baseStr && /^\d{4}-\d{2}-\d{2}$/.test(baseStr) ? baseStr : Engine.getTodayDateStr();
+  const [y0, m0, d0] = src.split('-').map((n) => parseInt(n, 10));
+  const totalM = y0 * 12 + (m0 - 1) + months;
+  const ny = Math.floor(totalM / 12);
+  const nm = (totalM % 12) + 1;
+  const maxDay = new Date(ny, nm, 0).getDate();
+  const nd = Math.min(d0, maxDay);
+  return `${ny}-${String(nm).padStart(2, '0')}-${String(nd).padStart(2, '0')}`;
+}
+
 Page({
   data: {
-    currentTab: 'dashboard', // dashboard | add | ledger | dengbao | budget
-    activePeriod: '2026-10',
+    currentTab: 'dashboard', // dashboard | add | ledger | dengbao | cards | budget
+    activePeriod: Engine.getCurrentPeriodInfo().periodKey,
+    lastAutoPeriod: Engine.getCurrentPeriodInfo().periodKey,
     periodOptions: [],
     periodIndex: 9,
     familyCode: 'cq2026',
@@ -17,7 +29,7 @@ Page({
     // 记一笔表单
     addForm: {
       role: 'c', // c | q | dengbao
-      date: '2026-11-01',
+      date: Engine.getTodayDateStr(),
       amount: '',
       type: '支出',
       purpose: '日常',
@@ -41,6 +53,21 @@ Page({
     filteredLedger: [],
     expenseChart: { totalText: '0.00', items: [], gradient: '' },
 
+    // 会员储值卡表单与列表
+    cardFormOpen: false,
+    cardForm: {
+      name: '',
+      cardType: 'stored',
+      owner: 'family',
+      price: '',
+      totalValue: '',
+      openDate: Engine.getTodayDateStr(),
+      expiryDate: addMonthsStr(Engine.getTodayDateStr(), 12),
+      note: ''
+    },
+    memberCards: [],
+    cardsSummary: { activeCount: 0, totalStoredRem: '0', totalPaid: '0', alertCount: 0 },
+
     // 预算子Tab
     budgetSubTab: 'necessary', // necessary | wish | sync
     budgetRole: 'c',
@@ -50,23 +77,46 @@ Page({
   },
 
   onLoad() {
-    this.initPeriods();
+    this.syncAutoPeriod(true);
     this.refreshReport();
     this.pullRemote();
   },
 
+  onShow() {
+    this.syncAutoPeriod(false);
+    this.refreshReport();
+  },
+
+  syncAutoPeriod(forceInit) {
+    const autoInfo = Engine.getCurrentPeriodInfo();
+    if (forceInit || autoInfo.periodKey !== this.data.lastAutoPeriod) {
+      this.setData({
+        activePeriod: autoInfo.periodKey,
+        lastAutoPeriod: autoInfo.periodKey,
+        'addForm.date': autoInfo.todayStr
+      });
+    }
+    this.initPeriods();
+  },
+
   initPeriods() {
+    const autoInfo = Engine.getCurrentPeriodInfo();
+    const maxYear = Math.max(2027, autoInfo.budgetYear + 1);
     const list = [];
-    for (let y = 2026; y <= 2027; y++) {
+    for (let y = 2026; y <= maxYear; y++) {
       for (let m = 1; m <= 12; m++) {
         const key = `${y}-${String(m).padStart(2, '0')}`;
-        list.push(Engine.getPeriodRange(key));
+        const r = Engine.getPeriodRange(key);
+        list.push({
+          ...r,
+          label: key === autoInfo.periodKey ? `${r.label} · 当期` : r.label
+        });
       }
     }
     const idx = list.findIndex((p) => p.periodKey === this.data.activePeriod);
     this.setData({
       periodOptions: list,
-      periodIndex: idx >= 0 ? idx : 9
+      periodIndex: idx >= 0 ? idx : 0
     });
   },
 
@@ -217,6 +267,19 @@ Page({
     const purposeOptions = this.getPurposeListByType(f.type);
     const categoryOptions = isDb ? rawData.dengbaoCategories : rawData.categories;
 
+    // 整理会员储值卡数据
+    const cr = r.memberCardsReport;
+    const ownerLabelMap = { family: '家庭共用', c: 'c', q: 'q', dengbao: '噔宝' };
+    const typeLabelMap = { stored: '储值卡', times: '计次卡', period: '期限会员' };
+    const memberCards = cr.cards.map((c) => ({
+      ...c,
+      ownerLabel: ownerLabelMap[c.owner] || '家庭共用',
+      typeLabel: typeLabelMap[c.cardType] || '储值卡',
+      priceText: fm(c.price, false),
+      remText: fm(c.remainingValue, false),
+      totalText: fm(c.totalValue, false)
+    }));
+
     this.setData({
       familyCode: rawData.familyCode || 'cq2026',
       view,
@@ -224,7 +287,14 @@ Page({
       expenseChart: this.buildExpenseChart(filteredLedger, lf.chartDim || 'category'),
       typeOptions,
       purposeOptions,
-      categoryOptions
+      categoryOptions,
+      memberCards,
+      cardsSummary: {
+        activeCount: cr.activeCount,
+        totalStoredRem: fm(cr.totalStoredRemaining, false),
+        totalPaid: fm(cr.totalPaidPrice, false),
+        alertCount: cr.alertCount
+      }
     });
   },
 
@@ -496,6 +566,96 @@ Page({
     app.saveLedgerData(rawData, () => {
       this.pullRemote();
       wx.showToast({ title: '已同步家庭口令', icon: 'success' });
+    });
+  },
+
+  // 会员储值卡事件
+  toggleCardForm() {
+    this.setData({ cardFormOpen: !this.data.cardFormOpen });
+  },
+
+  selectCardType(e) {
+    this.setData({ 'cardForm.cardType': e.currentTarget.dataset.type });
+  },
+
+  selectCardOwner(e) {
+    this.setData({ 'cardForm.owner': e.currentTarget.dataset.owner });
+  },
+
+  onCardFieldInput(e) {
+    const field = e.currentTarget.dataset.field;
+    this.setData({ [`cardForm.${field}`]: e.detail.value });
+  },
+
+  onCardDateChange(e) {
+    const field = e.currentTarget.dataset.field;
+    this.setData({ [`cardForm.${field}`]: e.detail.value });
+  },
+
+  quickCardExpiry(e) {
+    const m = e.currentTarget.dataset.months;
+    if (m === 'none') {
+      this.setData({ 'cardForm.expiryDate': '' });
+    } else {
+      const nextDate = addMonthsStr(this.data.cardForm.openDate || Engine.getTodayDateStr(), Number(m) || 12);
+      this.setData({ 'cardForm.expiryDate': nextDate });
+    }
+  },
+
+  submitMemberCard() {
+    const cf = this.data.cardForm;
+    const cleanName = (cf.name || '').trim();
+    if (!cleanName) {
+      wx.showToast({ title: '请填写卡名称', icon: 'none' });
+      return;
+    }
+    const price = Number(cf.price || 0);
+    const totalVal = cf.totalValue !== '' ? Number(cf.totalValue) : price;
+    const rawData = app.globalData.ledgerData;
+    rawData.memberCards = Array.isArray(rawData.memberCards) ? rawData.memberCards : [];
+    rawData.memberCards.push({
+      id: 'card_' + Date.now(),
+      name: cleanName,
+      cardType: cf.cardType || 'stored',
+      owner: cf.owner || 'family',
+      price: Engine.round2(price),
+      totalValue: Engine.round2(totalVal),
+      remainingValue: Engine.round2(totalVal),
+      openDate: cf.openDate || Engine.getTodayDateStr(),
+      expiryDate: cf.expiryDate || '',
+      note: (cf.note || '').trim(),
+      archived: false,
+      updatedAt: new Date().toISOString(),
+      logs: []
+    });
+    app.saveLedgerData(rawData);
+    this.setData({
+      cardFormOpen: false,
+      'cardForm.name': '',
+      'cardForm.price': '',
+      'cardForm.totalValue': '',
+      'cardForm.note': ''
+    });
+    this.refreshReport();
+    wx.showToast({ title: '已存入储值卡', icon: 'success' });
+  },
+
+  deleteMemberCard(e) {
+    const id = e.currentTarget.dataset.id;
+    wx.showModal({
+      title: '确认删除',
+      content: '确定删除这张会员储值卡记录吗？',
+      success: (res) => {
+        if (res.confirm) {
+          const rawData = app.globalData.ledgerData;
+          rawData.deletedCardIds = rawData.deletedCardIds || [];
+          if (!rawData.deletedCardIds.includes(id)) rawData.deletedCardIds.push(id);
+          rawData.memberCards = (rawData.memberCards || []).filter((c) => c.id !== id);
+          app.saveLedgerData(rawData);
+          this.refreshReport();
+          wx.showToast({ title: '已删除', icon: 'success' });
+        }
+      }
     });
   },
 
