@@ -40,6 +40,24 @@
     </view>
   </view>
 
+  <!-- 家庭金蛋与心愿金库累计卡 -->
+  <view class="card" style="background:linear-gradient(135deg,#fffbeb,#fef3c7);border:1px solid #fde68a;">
+    <view class="card-title" style="color:#92400e;">🏆 家庭金蛋与心愿金库</view>
+    <view class="card-sub" style="color:#b45309;">本年度累计已存金蛋进度 {{view.goldenPct}}%</view>
+    <view class="person-grid" style="margin-top:12rpx;">
+      <view class="person-box" style="background:rgba(255,255,255,0.85);color:#1e293b;">
+        <view class="person-head" style="color:#92400e;">🥚 累计已存金蛋</view>
+        <view class="person-val" style="color:#b45309;">¥ {{view.goldenTotal}}</view>
+        <view class="person-sub" style="color:#64748b;">c: ¥{{view.goldenC}} | q: ¥{{view.goldenQ}}</view>
+      </view>
+      <view class="person-box" style="background:rgba(255,255,255,0.85);color:#1e293b;">
+        <view class="person-head" style="color:#1e40af;">✨ {{view.wishPoolLabel}}</view>
+        <view class="person-val" style="color:#1d4ed8;">¥ {{view.wishPoolBal}}</view>
+        <view class="person-sub" style="color:#64748b;">本年心愿已兑现 ¥{{view.wishYearSpent}}</view>
+      </view>
+    </view>
+  </view>
+
   <!-- 本期工资分配明细 -->
   <view class="card">
     <view class="card-title">💰 本期工资分配明细</view>
@@ -114,7 +132,7 @@
       <text class="col-name">日常净消费</text>
       <text class="col-val">{{view.cDailySpent}}</text>
       <text class="col-val">{{view.qDailySpent}}</text>
-      <text class="col-val">{{view.famNecSpent ? '' : ''}}</text>
+      <text class="col-val">{{view.famDailySpent}}</text>
     </view>
     <view class="table-row">
       <text class="col-name">必要开支(含噔宝)</text>
@@ -201,6 +219,13 @@
       <view class="chip-wrap">
         <view wx:for="{{purposeOptions}}" wx:key="*this" class="chip {{addForm.purpose === item ? 'active' : ''}}" bindtap="selectAddPurpose" data-purpose="{{item}}">{{item}}</view>
       </view>
+      <block wx:if="{{budgetItemOptions.length > 0}}">
+        <view class="form-label" style="color:#0f766e;">🎯 对应{{addForm.purpose}}子项</view>
+        <view class="chip-wrap">
+          <view class="chip {{!addForm.budgetItemId ? 'active' : ''}}" bindtap="selectAddBudgetItem" data-bitem="">暂不指定</view>
+          <view wx:for="{{budgetItemOptions}}" wx:key="id" class="chip {{addForm.budgetItemId === item.id ? 'active' : ''}}" bindtap="selectAddBudgetItem" data-bitem="{{item.id}}">{{item.name}}{{item.remText ? ' · 余¥' + item.remText : ''}}</view>
+        </view>
+      </block>
     </block>
 
     <view class="form-label">发生日期</view>
@@ -275,6 +300,7 @@
           <text>{{item.category || item.purpose || '未分类'}}</text>
           <text class="badge badge-c">{{item.member === 'dengbao' ? '噔宝(' + item.payer + '付)' : item.member}}</text>
           <text class="badge badge-info">{{item.type}}{{item.purpose ? '·' + item.purpose : ''}}</text>
+          <text wx:if="{{item.resolvedBudgetItemName}}" class="badge badge-info" style="color:#0f766e;">🎯 {{item.resolvedBudgetItemName}}</text>
         </view>
         <view class="tx-date">{{item.date}} {{item.note}}</view>
       </view>
@@ -366,6 +392,9 @@
     </view>
     <view class="form-label">备注（手机号/门店/规则）</view>
     <input class="input-box" placeholder="如：绑定q手机号..." value="{{cardForm.note}}" bindinput="onCardFieldInput" data-field="note" />
+    <view class="chip-wrap" style="margin-top:14rpx;">
+      <view class="chip {{cardForm.recordedInLedger ? 'active' : ''}}" bindtap="toggleCardRecorded">🧾 办卡费已记入账单流水（防重复记账）</view>
+    </view>
     <button class="submit-btn" bindtap="submitMemberCard">✅ 存入会员卡包</button>
   </view>
 
@@ -377,6 +406,7 @@
           <text>{{item.name}}</text>
           <text class="badge badge-c">{{item.ownerLabel}}</text>
           <text class="badge badge-info">{{item.typeLabel}}</text>
+          <text class="badge badge-info">{{item.ledgerBadgeText}}</text>
         </view>
         <view class="tx-date">充卡: {{item.openDate}} | 保质期: {{item.expiryDate || '长期有效'}} ({{item.expiryBadgeText}})</view>
         <view wx:if="{{item.note}}" class="tx-date">备注: {{item.note}}</view>
@@ -407,12 +437,14 @@
       <view class="table-row th">
         <text class="col-name">项目</text>
         <text class="col-val">年度预算</text>
-        <text class="col-val">月均预留</text>
+        <text class="col-val">本年已花</text>
+        <text class="col-val">剩余额度</text>
       </view>
       <view wx:for="{{view.necessaryList}}" wx:key="id" class="table-row">
         <text class="col-name">{{item.name}}</text>
         <text class="col-val">{{item.annualBudgetText}}</text>
-        <text class="col-val">{{item.monthlyText}}</text>
+        <text class="col-val">{{item.spentText}}</text>
+        <text class="col-val">{{item.remText}}</text>
       </view>
     </block>
 
@@ -424,12 +456,14 @@
       <view class="table-row th">
         <text class="col-name">愿望</text>
         <text class="col-val">年度额度</text>
-        <text class="col-val">月均({{item.months}}月)</text>
+        <text class="col-val">本年已花</text>
+        <text class="col-val">剩余额度</text>
       </view>
       <view wx:for="{{view.wishList}}" wx:key="id" class="table-row">
         <text class="col-name">{{item.name}}</text>
         <text class="col-val">{{item.annualQuotaText}}</text>
-        <text class="col-val">{{item.monthlyText}}</text>
+        <text class="col-val">{{item.spentText}}</text>
+        <text class="col-val">{{item.remText}}</text>
       </view>
     </block>
 

@@ -157,6 +157,7 @@
       openDate: today,
       expiryDate: addMonthsToDateStr(today, 12),
       note: '',
+      recordedInLedger: false,
       syncToLedger: false,
       ledgerRole: savedPrefRole === 'q' ? 'q' : 'c',
       ledgerPurpose: '日常'
@@ -179,6 +180,7 @@
       amount: '',
       type: '支出',
       purpose: '日常',
+      budgetItemId: '',
       payer: savedPrefRole === 'q' ? 'q' : 'c',
       category: savedPrefRole === 'dengbao' ? '孩子用品' : '餐饮外卖',
       note: '',
@@ -240,11 +242,11 @@
     return normalizeLoadedData(JSON.parse(JSON.stringify(Engine.INITIAL_DATA)));
   }
 
-  function saveData(triggerSync = true) {
+  function saveData(triggerSync = true, syncOpts = {}) {
     state.data.updatedAt = new Date().toISOString();
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state.data));
     if (triggerSync) {
-      pushToServer();
+      pushToServer(syncOpts);
     }
   }
 
@@ -259,36 +261,289 @@
     }, 2200);
   }
 
+  // ==================== 统一移动端底部抽屉面板 (Bottom Sheet) ====================
+  let activeSheetConfig = null;
+  let activeSheetValues = {};
+
+  function closeBottomSheet() {
+    const overlay = document.getElementById('bottomSheetOverlay');
+    if (overlay) overlay.classList.add('hidden');
+    activeSheetConfig = null;
+    activeSheetValues = {};
+  }
+
+  function syncSheetInputsFromDOM() {
+    const panel = document.getElementById('bottomSheetPanel');
+    if (!panel || !activeSheetConfig) return;
+    (activeSheetConfig.fields || []).forEach((f) => {
+      const el = panel.querySelector(`[data-sheet-input="${f.key}"]`);
+      if (!el) return;
+      if (f.type === 'checkbox') {
+        activeSheetValues[f.key] = !!el.checked;
+      } else {
+        activeSheetValues[f.key] = el.value;
+      }
+    });
+  }
+
+  function renderSheetContent(focusKey) {
+    const panel = document.getElementById('bottomSheetPanel');
+    if (!panel || !activeSheetConfig) return;
+    const cfg = activeSheetConfig;
+    const vals = activeSheetValues;
+
+    const bannerHtml = cfg.banner
+      ? `<div class="alert-banner ${cfg.banner.level || 'info'}" style="margin-bottom:12px;">${cfg.banner.html}</div>`
+      : '';
+
+    const fieldsHtml = (cfg.fields || [])
+      .map((f) => {
+        if (typeof f.showWhen === 'function' && !f.showWhen(vals)) return '';
+        const val = vals[f.key] ?? '';
+        const gridCls = f.half ? '' : 'sheet-field-full';
+
+        if (f.type === 'checkbox') {
+          return `
+            <div class="form-group ${gridCls}" style="background:#f8fafc;padding:10px 12px;border-radius:10px;border:1px solid #e2e8f0;margin-bottom:10px;">
+              <label style="display:flex;align-items:center;gap:8px;font-size:12.5px;font-weight:700;cursor:pointer;">
+                <input type="checkbox" data-sheet-input="${f.key}" ${val ? 'checked' : ''} />
+                <span>${f.label}</span>
+              </label>
+              ${f.hint ? `<div style="font-size:11px;color:#64748b;margin-top:4px;">${f.hint}</div>` : ''}
+            </div>
+          `;
+        }
+
+        if (f.type === 'chips') {
+          return `
+            <div class="form-group ${gridCls}" style="margin-bottom:10px;">
+              <label class="form-label">${f.label}</label>
+              <div class="chip-grid">
+                ${(f.options || [])
+                  .map(
+                    (opt) =>
+                      `<button type="button" class="chip ${String(val) === String(opt.value) ? 'active' : ''}" data-sheet-chip="${f.key}" data-sheet-val="${escHtml(opt.value)}">${opt.label}</button>`
+                  )
+                  .join('')}
+              </div>
+            </div>
+          `;
+        }
+
+        const isMath = f.type === 'math';
+        const calcVal = isMath ? evalMathAmount(val) : NaN;
+        const mathHint =
+          isMath && /[+\-]/.test(String(val)) && !isNaN(calcVal) ? `= ${fm(calcVal, false)}` : '';
+        const inputType = f.type === 'date' ? 'date' : f.type === 'number' ? 'number' : 'text';
+        const inputMode = isMath || f.type === 'number' ? 'inputmode="decimal"' : '';
+        const readonlyAttr = f.type === 'readonly' ? 'readonly' : '';
+
+        return `
+          <div class="form-group ${gridCls}" style="margin-bottom:10px;">
+            <label class="form-label" style="display:flex;justify-content:space-between;align-items:center;">
+              <span>${f.label}</span>
+              <span data-sheet-math-hint="${f.key}" style="color:#0f766e;font-weight:700;">${mathHint}</span>
+            </label>
+            <input
+              type="${inputType}"
+              ${inputMode}
+              ${readonlyAttr}
+              class="form-input"
+              data-sheet-input="${f.key}"
+              placeholder="${escHtml(f.placeholder || '')}"
+              value="${escHtml(val)}"
+            />
+            ${
+              f.quickChips && f.quickChips.length > 0
+                ? `<div class="chip-grid" style="margin-top:6px;">
+                    ${f.quickChips
+                      .map(
+                        (qc) =>
+                          `<button type="button" class="chip ${String(val) === String(qc.value) ? 'active' : ''}" data-sheet-qfill="${f.key}" data-sheet-val="${escHtml(qc.value)}" style="padding:4px 9px;font-size:11px;">${qc.label}</button>`
+                      )
+                      .join('')}
+                  </div>`
+                : ''
+            }
+            ${f.hint ? `<div style="font-size:11px;color:#64748b;margin-top:4px;">${f.hint}</div>` : ''}
+          </div>
+        `;
+      })
+      .join('');
+
+    panel.innerHTML = `
+      <div class="sheet-handle"></div>
+      <div class="sheet-header">
+        <div>
+          <div class="sheet-title">${cfg.title || ''}</div>
+          ${cfg.subtitle ? `<div class="sheet-sub">${cfg.subtitle}</div>` : ''}
+        </div>
+        <button type="button" class="sheet-close" id="sheetCloseBtn" aria-label="关闭">✕</button>
+      </div>
+      ${bannerHtml}
+      <div class="sheet-error" id="sheetErrorBox"></div>
+      <div class="sheet-grid">
+        ${fieldsHtml}
+      </div>
+      <div class="sheet-actions" style="${cfg.hideCancel ? 'grid-template-columns:1fr;' : ''}">
+        ${cfg.hideCancel ? '' : `<button type="button" class="btn-secondary" id="sheetCancelBtn" style="padding:12px;font-size:14px;">取消</button>`}
+        <button type="button" class="btn-primary" id="sheetSubmitBtn" style="padding:12px;font-size:14px;">${cfg.submitText || '✅ 确认保存'}</button>
+      </div>
+    `;
+
+    const showError = (msg) => {
+      const errEl = document.getElementById('sheetErrorBox');
+      if (errEl) {
+        errEl.textContent = '⚠️ ' + msg;
+        errEl.classList.add('show');
+      }
+    };
+
+    const doSubmit = () => {
+      syncSheetInputsFromDOM();
+      if (typeof cfg.onSubmit === 'function') {
+        const res = cfg.onSubmit({ ...activeSheetValues }, showError);
+        if (res === false) return;
+      }
+      closeBottomSheet();
+    };
+
+    const closeBtn = document.getElementById('sheetCloseBtn');
+    const cancelBtn = document.getElementById('sheetCancelBtn');
+    const submitBtn = document.getElementById('sheetSubmitBtn');
+    if (closeBtn) closeBtn.onclick = closeBottomSheet;
+    if (cancelBtn) cancelBtn.onclick = closeBottomSheet;
+    if (submitBtn) submitBtn.onclick = doSubmit;
+
+    panel.querySelectorAll('[data-sheet-input]').forEach((el) => {
+      const key = el.dataset.sheetInput;
+      const fDef = (cfg.fields || []).find((x) => x.key === key);
+      if (el.type === 'checkbox') {
+        el.onchange = () => {
+          syncSheetInputsFromDOM();
+          renderSheetContent();
+        };
+      } else {
+        el.oninput = () => {
+          activeSheetValues[key] = el.value;
+          if (fDef && fDef.type === 'math') {
+            const hintEl = panel.querySelector(`[data-sheet-math-hint="${key}"]`);
+            if (hintEl) {
+              const cVal = evalMathAmount(el.value);
+              hintEl.textContent = /[+\-]/.test(String(el.value)) && !isNaN(cVal) ? `= ${fm(cVal, false)}` : '';
+            }
+          }
+        };
+        el.onkeydown = (ev) => {
+          if (ev.key === 'Enter') {
+            ev.preventDefault();
+            doSubmit();
+          }
+        };
+      }
+    });
+
+    panel.querySelectorAll('[data-sheet-chip]').forEach((btn) => {
+      btn.onclick = () => {
+        syncSheetInputsFromDOM();
+        activeSheetValues[btn.dataset.sheetChip] = btn.dataset.sheetVal;
+        if (typeof cfg.onFieldChange === 'function') {
+          cfg.onFieldChange(btn.dataset.sheetChip, btn.dataset.sheetVal, activeSheetValues);
+        }
+        renderSheetContent();
+      };
+    });
+
+    panel.querySelectorAll('[data-sheet-qfill]').forEach((btn) => {
+      btn.onclick = () => {
+        syncSheetInputsFromDOM();
+        activeSheetValues[btn.dataset.sheetQfill] = btn.dataset.sheetVal;
+        renderSheetContent();
+      };
+    });
+
+    if (focusKey) {
+      const targetInp = panel.querySelector(`[data-sheet-input="${focusKey}"]`);
+      if (targetInp && targetInp.type !== 'date' && targetInp.type !== 'checkbox') {
+        setTimeout(() => {
+          targetInp.focus();
+          if (targetInp.readOnly) {
+            targetInp.select();
+          }
+        }, 40);
+      }
+    }
+  }
+
+  function openBottomSheet(config) {
+    const overlay = document.getElementById('bottomSheetOverlay');
+    const backdrop = document.getElementById('bottomSheetBackdrop');
+    if (!overlay) return;
+    activeSheetConfig = config;
+    activeSheetValues = {};
+    let firstFocusKey = null;
+    (config.fields || []).forEach((f) => {
+      activeSheetValues[f.key] = f.value !== undefined && f.value !== null ? f.value : '';
+      if (!firstFocusKey && (f.type === 'text' || f.type === 'math' || f.type === 'number' || f.type === 'readonly')) {
+        firstFocusKey = f.key;
+      }
+    });
+    if (backdrop) backdrop.onclick = closeBottomSheet;
+    overlay.classList.remove('hidden');
+    renderSheetContent(firstFocusKey);
+  }
+
   function saveCloudConfig() {
     localStorage.setItem(CLOUD_CFG_KEY, JSON.stringify(state.cloudCfg));
   }
 
-  // 智能合并两份账本数据（你和老婆同时记账也不会互相覆盖，按流水 ID 自动合并去重）
+  // 从 Gist 文件字典中安全定位主账本文件（排除 z_snapshot_ 月度快照备份文件）
+  function pickMainGistFile(files, fileName) {
+    if (!files) return null;
+    if (files[fileName]) return files[fileName];
+    const fallbackKey = Object.keys(files).find(
+      (k) => k.startsWith('family_ledger_') && !k.startsWith('z_snapshot_')
+    );
+    return fallbackKey ? files[fallbackKey] : null;
+  }
+
+  // 智能合并两份账本数据（按单笔流水 updatedAt 保留最新修改，防止两人同时记账/改账互相覆盖）
   function mergeLedgerData(local, remote) {
     if (!remote || !remote.transactions) return local;
     if (!local || !local.transactions) return remote;
 
-    const merged = JSON.parse(JSON.stringify(
-      (remote.updatedAt || '') > (local.updatedAt || '') ? remote : local
-    ));
+    const remoteNewer = (remote.updatedAt || '') > (local.updatedAt || '');
+    const merged = JSON.parse(JSON.stringify(remoteNewer ? remote : local));
 
-    // 合并 c、q、dengbao 三张表的流水（按 id 去重，保留最新修改）
+    // 合并 c、q、dengbao 三张表的流水（按 id 去重，优先比较单笔 tx.updatedAt）
+    const deletedIds = new Set([
+      ...(local.deletedTxIds || []),
+      ...(remote.deletedTxIds || [])
+    ]);
+    merged.deletedTxIds = Array.from(deletedIds);
+
     ['c', 'q', 'dengbao'].forEach((role) => {
       const map = new Map();
-      const olderList = ((remote.updatedAt || '') > (local.updatedAt || '') ? local : remote).transactions[role] || [];
-      const newerList = ((remote.updatedAt || '') > (local.updatedAt || '') ? remote : local).transactions[role] || [];
+      const olderList = (remoteNewer ? local : remote).transactions[role] || [];
+      const newerList = (remoteNewer ? remote : local).transactions[role] || [];
       olderList.forEach((tx) => {
         if (tx && tx.id) map.set(tx.id, tx);
       });
       newerList.forEach((tx) => {
-        if (tx && tx.id) map.set(tx.id, tx);
+        if (!tx || !tx.id) return;
+        const prev = map.get(tx.id);
+        if (!prev) {
+          map.set(tx.id, tx);
+        } else if (tx.updatedAt && prev.updatedAt) {
+          if (tx.updatedAt >= prev.updatedAt) map.set(tx.id, tx);
+        } else if (tx.updatedAt && !prev.updatedAt) {
+          map.set(tx.id, tx);
+        } else if (!tx.updatedAt && prev.updatedAt) {
+          // 保留带有明确单笔编辑时间戳的版本
+        } else {
+          map.set(tx.id, tx);
+        }
       });
-      // 处理已删除的流水 ID 集合
-      const deletedIds = new Set([
-        ...(local.deletedTxIds || []),
-        ...(remote.deletedTxIds || [])
-      ]);
-      merged.deletedTxIds = Array.from(deletedIds);
       merged.transactions[role] = Array.from(map.values()).filter((tx) => !deletedIds.has(tx.id));
     });
 
@@ -299,8 +554,8 @@
     ]);
     merged.deletedCardIds = Array.from(deletedCardIds);
     const cardMap = new Map();
-    const olderCards = ((remote.updatedAt || '') > (local.updatedAt || '') ? local : remote).memberCards || [];
-    const newerCards = ((remote.updatedAt || '') > (local.updatedAt || '') ? remote : local).memberCards || [];
+    const olderCards = (remoteNewer ? local : remote).memberCards || [];
+    const newerCards = (remoteNewer ? remote : local).memberCards || [];
     olderCards.forEach((c) => {
       if (c && c.id) cardMap.set(c.id, c);
     });
@@ -342,7 +597,7 @@
         const res = await fetch(apiUrl, { headers, cache: 'no-store' });
         if (res.ok) {
           const gist = await res.json();
-          const fileObj = gist.files && (gist.files[fileName] || Object.values(gist.files)[0]);
+          const fileObj = pickMainGistFile(gist.files, fileName);
           if (fileObj && fileObj.content) {
             const remoteData = JSON.parse(fileObj.content);
             state.syncOnline = true;
@@ -397,13 +652,13 @@
     }
   }
 
-  async function pushToServer() {
+  async function pushToServer(syncOpts = {}) {
     const cfg = state.cloudCfg;
     const code = state.data.familyCode || 'cq2026';
     const fileName = `family_ledger_${code}.json`;
 
-    // 推送前先拉取一次远端进行智能合并，防止两人同时记账互相覆盖
-    if ((cfg.provider === 'github' || cfg.provider === 'gitee') && cfg.token && cfg.gistId) {
+    // 推送前先拉取一次远端进行智能合并（重置操作除外），防止两人同时记账互相覆盖
+    if (!syncOpts.forceOverwrite && (cfg.provider === 'github' || cfg.provider === 'gitee') && cfg.token && cfg.gistId) {
       try {
         const apiUrl =
           cfg.provider === 'github'
@@ -416,7 +671,7 @@
         const preRes = await fetch(apiUrl, { headers, cache: 'no-store' });
         if (preRes.ok) {
           const gist = await preRes.json();
-          const fileObj = gist.files && (gist.files[fileName] || Object.values(gist.files)[0]);
+          const fileObj = pickMainGistFile(gist.files, fileName);
           if (fileObj && fileObj.content) {
             const remoteData = JSON.parse(fileObj.content);
             state.data = mergeLedgerData(state.data, remoteData);
@@ -427,7 +682,7 @@
       } catch (e) {}
     }
 
-    // 1. GitHub / Gitee 云端同步推送
+    // 1. GitHub / Gitee 云端同步推送（附带按账期月度自动快照，历史月份永久保留在 Gist）
     if ((cfg.provider === 'github' || cfg.provider === 'gitee') && cfg.token) {
       try {
         const isCreating = !cfg.gistId;
@@ -446,12 +701,24 @@
           headers.Accept = 'application/vnd.github.v3+json';
         }
 
+        const gistFiles = {
+          [fileName]: { content: JSON.stringify(state.data, null, 2) }
+        };
+        if (syncOpts.preResetData) {
+          gistFiles[`z_snapshot_${code}_before_reset.json`] = {
+            content: JSON.stringify(syncOpts.preResetData)
+          };
+        } else if (!syncOpts.skipMonthlySnapshot) {
+          const snapPeriod = getAutoPeriodKey();
+          gistFiles[`z_snapshot_${code}_${snapPeriod}.json`] = {
+            content: JSON.stringify(state.data)
+          };
+        }
+
         const bodyObj = {
           description: `2026-2027 家庭共同记账 (${code})`,
           public: false,
-          files: {
-            [fileName]: { content: JSON.stringify(state.data, null, 2) }
-          }
+          files: gistFiles
         };
         if (cfg.provider === 'gitee') {
           bodyObj.access_token = cfg.token;
@@ -622,6 +889,7 @@
     const track = report.annualTracking;
     const annSum = report.annualSummary;
     const cardRep = report.memberCardsReport;
+    const tr = report.treasurySummary;
     const remDays = calcPeriodRemainingDays(report.periodRange.endDate);
     const cPerDay = alloc.c.remainingPocket !== null ? Math.max(0, alloc.c.remainingPocket / remDays) : null;
     const qPerDay = alloc.q.remainingPocket !== null ? Math.max(0, alloc.q.remainingPocket / remDays) : null;
@@ -631,6 +899,10 @@
       const map = { ok: 'badge-ok', warn: 'badge-warn', danger: 'badge-danger', info: 'badge-info' };
       return `<span class="badge ${map[level] || 'badge-info'}">${text}</span>`;
     };
+
+    const wishSubLine = tr.wishPool.hasExplicitDeposit
+      ? `累计转入 ¥${fm(tr.wishPool.totalDeposit, false)} − 已兑现 ¥${fm(tr.wishPool.totalSpent, false)}`
+      : `发薪预留 ¥${fm(tr.wishPool.totalAccrued, false)} − 已兑现 ¥${fm(tr.wishPool.totalSpent, false)}`;
 
     return `
       <!-- 零花钱核心卡片 -->
@@ -683,6 +955,52 @@
           （点击下方“记一笔”选择“收入+工资”即可自动激活当期分配）
         </div>
       ` : ''}
+
+      <!-- 🏆 家庭金蛋与心愿金库（累计攒钱成就卡） -->
+      <section class="treasury-card">
+        <div class="treasury-head">
+          <div class="treasury-title">
+            <span>🏆 家庭金蛋与心愿金库</span>
+          </div>
+          <button type="button" class="btn-secondary" style="padding:4px 9px;font-size:11px;background:rgba(255,255,255,0.85);border-color:#fcd34d;color:#92400e;" data-action="quickDepositWish">
+            ✨ 许愿池打卡
+          </button>
+        </div>
+        <div class="treasury-grid">
+          <div class="treasury-box">
+            <div class="treasury-label">
+              <span>🥚 累计已存金蛋</span>
+              ${tr.goldenEgg.pendingCheckin > 0 ? `<span class="badge badge-warn" style="font-size:10px;padding:1px 6px;">待打卡¥${fm(tr.goldenEgg.pendingCheckin, false)}</span>` : `<span class="badge badge-ok" style="font-size:10px;padding:1px 6px;">已达标</span>`}
+            </div>
+            <div class="treasury-val">¥ ${fm(tr.goldenEgg.totalDeposit, false)}</div>
+            <div class="treasury-meta">
+              👦 c 累计: <strong>¥${fm(tr.goldenEgg.cDeposit, false)}</strong> · 👧 q 累计: <strong>¥${fm(tr.goldenEgg.qDeposit, false)}</strong><br/>
+              已发薪期应存合计: ¥${fm(tr.goldenEgg.totalAccruedTarget, false)}
+            </div>
+          </div>
+          <div class="treasury-box wish">
+            <div class="treasury-label">
+              <span>✨ 许愿池当前池余</span>
+              <span class="badge ${tr.wishPool.availableBalance < 0 ? 'badge-warn' : 'badge-ok'}" style="font-size:10px;padding:1px 6px;">${tr.wishPool.hasExplicitDeposit ? '实存池' : '预留池'}</span>
+            </div>
+            <div class="treasury-val" style="${tr.wishPool.availableBalance < 0 ? 'color:#d97706;' : ''}">¥ ${fm(tr.wishPool.availableBalance, false)}</div>
+            <div class="treasury-meta">
+              👦 c池: <strong>¥${fm(tr.wishPool.cAvailable, false)}</strong> · 👧 q池: <strong>¥${fm(tr.wishPool.qAvailable, false)}</strong><br/>
+              ${wishSubLine}
+            </div>
+          </div>
+        </div>
+        <div class="treasury-foot">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:5px;">
+            <span>🎯 <strong>${tr.budgetYear}年度攒金蛋进度</strong>（保底目标 ¥${fm(tr.goldenEgg.annualBaseTarget, false)}/年）</span>
+            <span style="font-weight:800;">¥${fm(tr.goldenEgg.yearDeposit, false)} (${Math.round(tr.goldenEgg.yearProgressPct)}%)</span>
+          </div>
+          <div class="progress-track" style="height:7px;background:rgba(217,119,6,0.14);">
+            <div class="progress-fill ok" style="width:${tr.goldenEgg.yearProgressPct}%;background:linear-gradient(90deg,#f59e0b,#10b981);"></div>
+          </div>
+          ${tr.otherSavings.totalDeposit !== 0 ? `<div style="margin-top:6px;font-size:11px;color:#065f46;">🏦 其他储蓄累计净存入: <strong>¥${fm(tr.otherSavings.totalDeposit, false)}</strong>（c: ¥${fm(tr.otherSavings.cDeposit, false)} | q: ¥${fm(tr.otherSavings.qDeposit, false)}）</div>` : ''}
+        </div>
+      </section>
 
       <!-- 本期工资与月度分配表 -->
       <section class="card">
@@ -945,6 +1263,22 @@
     return ['日常'];
   }
 
+  function suggestCategoryForBudgetItem(itemName, purpose) {
+    if (!itemName) return null;
+    if (itemName.includes('服装')) return '服饰鞋包';
+    if (itemName === '水费' || itemName === '电费' || itemName === '燃气') return '水电燃气';
+    if (itemName === '物业费' || itemName.includes('车位')) return '物业停车';
+    if (itemName.includes('汽车')) return itemName.includes('保险') ? '保险' : '汽车费用';
+    if (itemName.includes('医疗') || itemName.includes('保健') || itemName.includes('健身')) return '医疗健康';
+    if (itemName.includes('话费')) return '话费网络';
+    if (itemName.includes('房贷')) return '房贷';
+    if (itemName.includes('游') || itemName.includes('旅')) return '旅游出游';
+    if (itemName.includes('会员') || itemName === '网飞' || itemName === '梯子' || itemName === 'AI') return '订阅会员';
+    if (itemName.includes('手机') || itemName.toLowerCase().includes('ultra')) return '数码家电';
+    if (purpose === '必要开支' && (itemName.includes('杂物') || itemName.includes('个护'))) return '日用品';
+    return null;
+  }
+
   function renderAdd(report) {
     const f = state.addForm;
     const isDengbao = f.role === 'dengbao';
@@ -958,17 +1292,35 @@
 
     const cats = isDengbao ? state.data.dengbaoCategories : state.data.categories;
 
-    // 实时预览本笔后剩余年度额度
+    // 必要开支 / 许愿池 子项候选列表
+    const needBudgetItem =
+      !isDengbao && (f.type === '支出' || f.type === '退款') && (f.purpose === '必要开支' || f.purpose === '许愿池');
+    const budgetSubItems = needBudgetItem
+      ? f.purpose === '必要开支'
+        ? (report.budgets[f.role].necessaryItems || []).filter((it) => it.name && it.name !== '噔宝' && !it.isOffset)
+        : (report.budgets[f.role].wishItems || []).filter((it) => it.name)
+      : [];
+    if (needBudgetItem && f.budgetItemId && !budgetSubItems.some((it) => it.id === f.budgetItemId)) {
+      f.budgetItemId = '';
+    }
+    const selectedSubItem = needBudgetItem ? budgetSubItems.find((it) => it.id === f.budgetItemId) : null;
+
+    // 实时预览本笔后剩余年度额度（及具体子项剩余额度）
     let quotaPreviewHtml = '';
     const numAmt = evalMathAmount(f.amount) || 0;
-    if (!isDengbao && (f.type === '支出' || f.type === '退款') && (f.purpose === '必要开支' || f.purpose === '许愿池')) {
+    if (needBudgetItem) {
       const memberTrack = report.annualTracking[f.role];
       const curRem = f.purpose === '必要开支' ? memberTrack.necRemaining : memberTrack.wishRemaining;
       const delta = f.type === '支出' ? -numAmt : numAmt;
       const afterRem = curRem + delta;
+      const subItemLine =
+        selectedSubItem && selectedSubItem.remaining !== null
+          ? `<div style="margin-top:4px;">🎯 <strong>「${escHtml(selectedSubItem.name)}」子项额度：</strong>当前剩余 ¥${fm(selectedSubItem.remaining, false)} → 本笔后剩余 <strong>¥${fm(selectedSubItem.remaining + delta, false)}</strong></div>`
+          : '';
       quotaPreviewHtml = `
-        <div class="alert-banner ${afterRem < 0 ? 'warn' : 'info'}">
-          📊 <strong>年度${f.purpose}额度预览：</strong>当前剩余 ¥${fm(curRem, false)} → 本笔后剩余 <strong>¥${fm(afterRem, false)}</strong>
+        <div class="alert-banner ${afterRem < 0 || (selectedSubItem && selectedSubItem.remaining !== null && selectedSubItem.remaining + delta < 0) ? 'warn' : 'info'}">
+          <div>📊 <strong>年度${f.purpose}总额预览：</strong>当前剩余 ¥${fm(curRem, false)} → 本笔后剩余 <strong>¥${fm(afterRem, false)}</strong></div>
+          ${subItemLine}
         </div>
       `;
     } else if (isDengbao) {
@@ -1035,6 +1387,25 @@
             </div>
           </div>
         `
+        }
+
+        ${
+          needBudgetItem && budgetSubItems.length > 0
+            ? `
+          <div class="form-group" style="background:#f8fafc;padding:10px 12px;border-radius:12px;border:1px solid #e2e8f0;">
+            <label class="form-label" style="color:#0f766e;margin-bottom:7px;">🎯 对应${f.purpose}子项（精准核减该项目年度预算）</label>
+            <div class="chip-grid">
+              <button type="button" class="chip ${!f.budgetItemId ? 'active' : ''}" data-bitem="">暂不指定</button>
+              ${budgetSubItems
+                .map((it) => {
+                  const remTxt = it.remaining !== null ? ` · 余¥${fm(it.remaining, false)}` : '';
+                  return `<button type="button" class="chip ${f.budgetItemId === it.id ? 'active' : ''}" data-bitem="${it.id}">${escHtml(it.name)}${remTxt}</button>`;
+                })
+                .join('')}
+            </div>
+          </div>
+        `
+            : ''
         }
 
         <!-- 日期与金额 -->
@@ -1221,7 +1592,7 @@
         }
         if (lf.searchKeyword && lf.searchKeyword.trim()) {
           const kw = lf.searchKeyword.trim().toLowerCase();
-          const hay = `${tx.category || ''} ${tx.purpose || ''} ${tx.note || ''} ${tx.amount || ''} ${tx.date || ''}`.toLowerCase();
+          const hay = `${tx.category || ''} ${tx.purpose || ''} ${tx.resolvedBudgetItemName || ''} ${tx.note || ''} ${tx.amount || ''} ${tx.date || ''}`.toLowerCase();
           if (!hay.includes(kw)) return false;
         }
         return true;
@@ -1303,10 +1674,11 @@
                       <div class="tx-left">
                         <div class="tx-avatar ${tx.member}">${isDb ? '宝' : tx.member.toUpperCase()}</div>
                         <div>
-                          <div class="tx-info-title">
+                          <div class="tx-info-title" style="flex-wrap:wrap;">
                             <span>${tx.category || tx.purpose || '未分类'}</span>
                             <span class="badge ${isDb ? 'badge-db' : tx.member === 'c' ? 'badge-c' : 'badge-q'}">${roleLabel}</span>
                             <span class="badge badge-info">${tx.type}${tx.purpose ? '·' + tx.purpose : ''}</span>
+                            ${tx.resolvedBudgetItemName ? `<span class="badge badge-ok">🎯 ${escHtml(tx.resolvedBudgetItemName)}</span>` : ''}
                           </div>
                           <div class="tx-info-sub">
                             ${tx.date} ${tx.note ? ' · ' + tx.note : ''}
@@ -1434,41 +1806,72 @@
         <div class="card">
           <div class="card-header">
             <div>
-              <div class="card-title">${role.toUpperCase()} · 年度必要开支清单</div>
-              <div class="card-subtitle">正数合计年度额度: ¥${fm(bRole.necessaryAnnualQuota, false)} · 负数收租抵减月均预留</div>
+              <div class="card-title">${role.toUpperCase()} · ${report.budgets.budgetYear}年度必要开支对账清单</div>
+              <div class="card-subtitle">年度消费总额度: ¥${fm(bRole.necessaryAnnualQuota, false)} · 每笔必要开支可精确核销对应子项</div>
             </div>
             <button class="btn-secondary" data-action="addNecessaryItem">+ 新增项目</button>
           </div>
-          <table class="data-table">
-            <thead>
-              <tr>
-                <th>项目名称</th>
-                <th>年度预算(元)</th>
-                <th>月均预留</th>
-                <th>操作</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${bRole.necessaryItems
-                .map(
-                  (it) => `
-                <tr>
-                  <td>
-                    <strong>${it.name}</strong>
-                    ${it.tip ? `<div style="font-size:10px;color:#f59e0b;">${it.tip}</div>` : ''}
-                  </td>
-                  <td>${it.annualBudget !== null ? fm(it.annualBudget, false) : '<span style="color:#94a3b8;">未设</span>'}</td>
-                  <td>${it.monthly !== null ? fm(it.monthly) : '--'}</td>
-                  <td>
-                    <button class="btn-secondary" style="padding:3px 7px;font-size:11px;" data-edit-nec="${it.id}">改额</button>
-                    <button class="btn-danger-sm" data-del-nec="${it.id}">删</button>
-                  </td>
-                </tr>
-              `
-                )
-                .join('')}
-            </tbody>
-          </table>
+          ${
+            bRole.necUnassignedSpent > 0
+              ? `<div class="alert-banner info" style="font-size:11.5px;">
+                  📌 另有 <strong>¥${fm(bRole.necUnassignedSpent, false)}</strong> 必要开支尚未指定具体子项（已计入年度总额度；可在「流水明细」点编辑补充归类）。
+                </div>`
+              : ''
+          }
+          <div class="bitem-list">
+            ${bRole.necessaryItems
+              .map((it) => {
+                const isDbItem = it.name === '噔宝';
+                let progressSection = '';
+                if (it.isOffset) {
+                  progressSection = `
+                    <div class="bitem-sub">
+                      <span style="color:#0f766e;font-weight:600;">💰 收租抵减项（自动抵减月均预留 ¥${fm(Math.abs(it.monthly || 0))}/月）</span>
+                      <span>年度抵减: <strong>¥${fm(it.annualBudget, false)}</strong></span>
+                    </div>
+                  `;
+                } else if (it.annualBudget === null) {
+                  progressSection = `
+                    <div class="bitem-sub">
+                      <span>本年已花: <strong>¥${fm(it.spent, false)}</strong></span>
+                      <span style="color:#f59e0b;">未设年度预算（点右侧改额可设）</span>
+                    </div>
+                  `;
+                } else {
+                  const pct = Math.min(100, Math.max(0, it.ratio * 100));
+                  progressSection = `
+                    <div class="progress-track" style="height:6px;margin:4px 0;">
+                      <div class="progress-fill ${it.level}" style="width:${pct.toFixed(1)}%"></div>
+                    </div>
+                    <div class="bitem-sub">
+                      <span>已花 <strong>¥${fm(it.spent, false)}</strong> / 预算 ¥${fm(it.annualBudget, false)} (月均¥${fm(it.monthly)})</span>
+                      <span style="color:${it.remaining < 0 ? '#ef4444' : '#0f766e'};font-weight:700;">
+                        ${it.remaining < 0 ? `超支 ¥${fm(Math.abs(it.remaining), false)}` : `剩余 ¥${fm(it.remaining, false)}`}
+                      </span>
+                    </div>
+                  `;
+                }
+
+                return `
+                  <div class="bitem-row">
+                    <div class="bitem-top">
+                      <div class="bitem-name-wrap">
+                        <span class="bitem-name">${escHtml(it.name)}</span>
+                        ${isDbItem ? `<span class="badge badge-db">👶 自动汇总噔宝专表</span>` : ''}
+                        ${it.isOffset ? `<span class="badge badge-ok">月均抵减</span>` : ''}
+                        ${it.tip ? `<span class="badge badge-warn">${escHtml(it.tip)}</span>` : ''}
+                      </div>
+                      <div class="bitem-actions">
+                        <button class="btn-secondary" style="padding:3px 8px;font-size:11px;" data-edit-nec="${it.id}">改额</button>
+                        <button class="btn-danger-sm" data-del-nec="${it.id}">删</button>
+                      </div>
+                    </div>
+                    ${progressSection}
+                  </div>
+                `;
+              })
+              .join('')}
+          </div>
         </div>
       `;
     } else if (sub === 'wish') {
@@ -1480,43 +1883,62 @@
         <div class="card">
           <div class="card-header">
             <div>
-              <div class="card-title">${role.toUpperCase()} · 许愿池心愿单</div>
-              <div class="card-subtitle">年度总额度: ¥${fm(bRole.wishAnnualQuota, false)} · 分摊月数仅影响每月预留</div>
+              <div class="card-title">${role.toUpperCase()} · ${report.budgets.budgetYear}年度许愿池心愿单</div>
+              <div class="card-subtitle">年度总额度: ¥${fm(bRole.wishAnnualQuota, false)} · 分摊月数决定每月工资预留</div>
             </div>
             <button class="btn-secondary" data-action="addWishItem">+ 新增愿望</button>
           </div>
-          <table class="data-table">
-            <thead>
-              <tr>
-                <th>愿望名称</th>
-                <th>年度额度</th>
-                <th>分摊月数</th>
-                <th>月均预留</th>
-                <th>操作</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${bRole.wishItems
-                .map(
-                  (it) => `
-                <tr>
-                  <td>
-                    <strong>${it.name}</strong>
-                    ${it.tip ? `<div style="font-size:10px;color:#f59e0b;">${it.tip}</div>` : ''}
-                  </td>
-                  <td>${it.annualQuota !== null ? fm(it.annualQuota, false) : '<span style="color:#94a3b8;">未设</span>'}</td>
-                  <td>${it.months}个月</td>
-                  <td>${it.monthly !== null ? fm(it.monthly) : '--'}</td>
-                  <td>
-                    <button class="btn-secondary" style="padding:3px 7px;font-size:11px;" data-edit-wish="${it.id}">改额</button>
-                    <button class="btn-danger-sm" data-del-wish="${it.id}">删</button>
-                  </td>
-                </tr>
-              `
-                )
-                .join('')}
-            </tbody>
-          </table>
+          ${
+            bRole.wishUnassignedSpent > 0
+              ? `<div class="alert-banner info" style="font-size:11.5px;">
+                  📌 另有 <strong>¥${fm(bRole.wishUnassignedSpent, false)}</strong> 许愿池消费尚未指定具体愿望（可在「流水明细」点编辑补充归类）。
+                </div>`
+              : ''
+          }
+          <div class="bitem-list">
+            ${bRole.wishItems
+              .map((it) => {
+                let progressSection = '';
+                if (it.annualQuota === null) {
+                  progressSection = `
+                    <div class="bitem-sub">
+                      <span>已消费: <strong>¥${fm(it.spent, false)}</strong>（分摊 ${it.months}个月）</span>
+                      <span style="color:#f59e0b;">未设心愿额度（点改额设置）</span>
+                    </div>
+                  `;
+                } else {
+                  const pct = Math.min(100, Math.max(0, it.ratio * 100));
+                  progressSection = `
+                    <div class="progress-track" style="height:6px;margin:4px 0;">
+                      <div class="progress-fill ${it.level}" style="width:${pct.toFixed(1)}%"></div>
+                    </div>
+                    <div class="bitem-sub">
+                      <span>已花 <strong>¥${fm(it.spent, false)}</strong> / 额度 ¥${fm(it.annualQuota, false)} (${it.months}月·月均¥${fm(it.monthly)})</span>
+                      <span style="color:${it.remaining < 0 ? '#ef4444' : '#0f766e'};font-weight:700;">
+                        ${it.remaining < 0 ? `超支 ¥${fm(Math.abs(it.remaining), false)}` : `剩余 ¥${fm(it.remaining, false)}`}
+                      </span>
+                    </div>
+                  `;
+                }
+
+                return `
+                  <div class="bitem-row">
+                    <div class="bitem-top">
+                      <div class="bitem-name-wrap">
+                        <span class="bitem-name">✨ ${escHtml(it.name)}</span>
+                        ${it.tip ? `<span class="badge badge-warn">${escHtml(it.tip)}</span>` : ''}
+                      </div>
+                      <div class="bitem-actions">
+                        <button class="btn-secondary" style="padding:3px 8px;font-size:11px;" data-edit-wish="${it.id}">改额</button>
+                        <button class="btn-danger-sm" data-del-wish="${it.id}">删</button>
+                      </div>
+                    </div>
+                    ${progressSection}
+                  </div>
+                `;
+              })
+              .join('')}
+          </div>
         </div>
       `;
     } else if (sub === 'yearend') {
@@ -1571,15 +1993,21 @@
               </tr>
               <tr>
                 <td>预计可留存上限</td>
-                <td>${fm(track.c.maxRetainable)}</td>
-                <td>${fm(track.q.maxRetainable)}</td>
-                <td>${track.c.maxRetainable !== null && track.q.maxRetainable !== null ? fm(Math.max(0, track.family.combinedSurplus)) : '--'}</td>
+                <td>${fm(track.c.maxRetainable, false)}</td>
+                <td>${fm(track.q.maxRetainable, false)}</td>
+                <td>${track.c.maxRetainable !== null && track.q.maxRetainable !== null ? fm(Math.max(0, track.family.combinedSurplus), false) : '--'}</td>
               </tr>
               <tr>
                 <td>年末实有资金</td>
-                <td>${fm(track.c.actualFunds)}</td>
-                <td>${fm(track.q.actualFunds)}</td>
-                <td>${track.c.actualFunds !== null && track.q.actualFunds !== null ? fm(track.c.actualFunds + track.q.actualFunds) : '--'}</td>
+                <td>${fm(track.c.actualFunds, false)}</td>
+                <td>${fm(track.q.actualFunds, false)}</td>
+                <td>${track.c.actualFunds !== null && track.q.actualFunds !== null ? fm(track.c.actualFunds + track.q.actualFunds, false) : '--'}</td>
+              </tr>
+              <tr class="row-highlight">
+                <td>🏦 预计可转存下年额度</td>
+                <td>${fm(track.c.transferable, false)}</td>
+                <td>${fm(track.q.transferable, false)}</td>
+                <td>${track.c.transferable !== null && track.q.transferable !== null ? fm(track.c.transferable + track.q.transferable, false) : '--'}</td>
               </tr>
             </tbody>
           </table>
@@ -1600,7 +2028,7 @@
             <strong>当前状态：${state.syncModeLabel}</strong> —
             ${
               state.syncOnline
-                ? '✅ 已接通实时同步，你和老婆在各自手机上的记账会自动双向合并。'
+                ? '✅ 已接通实时同步，你和老婆在各自手机上的记账会按单笔修改时间智能双向合并，且每月自动生成云端账期快照。'
                 : 'ℹ️ 当前保存在手机本地缓存。配置下方任一方式即可开启双人实时同步。'
             }
           </div>
@@ -1639,6 +2067,11 @@
               <button type="button" class="btn-primary" data-action="saveCloudCfg">☁️ 保存并立即同步云端</button>
               <button type="button" class="btn-secondary" data-action="copyWifeShareLink">🔗 复制给老婆的一键绑定链接</button>
             </div>
+            <div style="margin-bottom:10px;">
+              <button type="button" class="btn-secondary" style="width:100%;border-color:#99f6e4;background:#f0fdfa;color:#0f766e;" data-action="restoreCloudSnapshot">
+                🕰️ 从云端月度自动备份快照恢复（防误删/防误重置保护）
+              </button>
+            </div>
           `
               : `
             <div class="alert-banner info">
@@ -1661,7 +2094,7 @@
           </div>
           <div style="margin-top:12px;">
             <button class="btn-danger-sm" style="width:100%;padding:10px;font-weight:600;" data-action="resetInitial">
-              🔄 重置为原 Excel 初始数据 (2026-2027年度家庭共同记账.xlsx)
+              🔄 重置为原 Excel 初始数据 (重置前自动归档云端快照)
             </button>
           </div>
         </div>
@@ -1882,12 +2315,28 @@
                       : ''
                   }
                 </div>
+                <div style="font-size:11px;color:#0f766e;margin-top:6px;">🧾 勾选后卡片将自动打上「已入账单」标记，日后扣卡消费时会自动提醒无需重复记账。</div>
               `
-                  : ''
+                  : `
+                <div style="margin-top:8px;padding-top:8px;border-top:1px dashed #cbd5e1;">
+                  <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:#334155;cursor:pointer;">
+                    <input type="checkbox" id="cfRecordedChk" ${cf.recordedInLedger ? 'checked' : ''} />
+                    <span>🧾 这张旧卡以前已经在账单里记过支出了（防扣消费重复记账）</span>
+                  </label>
+                </div>
+              `
               }
             </div>
           `
-              : ''
+              : `
+            <div class="form-group" style="background:#f8fafc;padding:10px 12px;border-radius:10px;border:1px solid #e2e8f0;">
+              <label style="display:flex;align-items:center;gap:8px;font-size:12.5px;font-weight:700;cursor:pointer;">
+                <input type="checkbox" id="cfRecordedChk" ${cf.recordedInLedger ? 'checked' : ''} />
+                <span>🧾 办卡/充值费用已记入家庭账单流水</span>
+              </label>
+              <div style="font-size:11px;color:#64748b;margin-top:4px;">开启后，每次扣减该卡消费时会自动提示「无需重复记入账单」，避免一笔钱扣两次预算。</div>
+            </div>
+          `
           }
 
           <button type="button" class="btn-primary" id="saveCardBtn">
@@ -1982,6 +2431,11 @@
                         <span class="mcard-name">${escHtml(c.name)}</span>
                         ${ownerBadge(c.owner)}
                         <span class="badge badge-info">${typeLabel(c.cardType)}</span>
+                        ${
+                          c.recordedInLedger
+                            ? `<span class="badge badge-ok" title="充卡实付已计入家庭账单，扣消费无需重复记账">🧾 已入账单</span>`
+                            : `<span class="badge" style="background:#f1f5f9;color:#64748b;" title="充卡时未记入账单，可在扣消费时按次同步记入账单">未记账单</span>`
+                        }
                         ${c.isDepleted ? `<span class="badge badge-danger">已用完</span>` : ''}
                         ${c.archived ? `<span class="badge badge-info">已归档</span>` : ''}
                       </div>
@@ -2105,40 +2559,160 @@
         state.currentTab = 'add';
         state.addForm.role = localStorage.getItem(PREF_ROLE_KEY) || 'c';
         state.addForm.date = getTodayStr();
+        state.addForm.budgetItemId = '';
+        state.addForm.explicitNoBudgetItem = false;
         updateTabBarUI();
         render();
       };
     });
 
-    // 发薪后一键金蛋打卡存入
+    // 发薪后一键金蛋打卡存入（移动端抽屉面板）
     main.querySelectorAll('[data-action="quickDepositGolden"]').forEach((btn) => {
       btn.onclick = () => {
         const m = btn.dataset.member;
         const mAlloc = report.currentAllocation[m];
         const stillNeed = mAlloc && mAlloc.goldenEggStillNeed ? Math.round(mAlloc.goldenEggStillNeed) : 0;
         const defaultAmt = stillNeed > 0 ? stillNeed : 2000;
-        const val = prompt(
-          `⚡ 一键记入【${m.toUpperCase()} 本期金蛋存入】\n本期应存合计: ¥${fm(mAlloc.goldenEggTotal)}\n当前还需存入: ¥${fm(stillNeed)}\n请输入本次实际存入金额（元）：`,
-          defaultAmt
-        );
-        if (val === null || val.trim() === '') return;
-        const num = evalMathAmount(val);
-        if (isNaN(num) || num <= 0) {
-          alert('请输入有效的正数金额');
-          return;
-        }
-        state.data.transactions[m].push({
-          id: 'tx_' + Date.now(),
-          date: report.periodRange.startDate,
-          amount: num,
-          type: '存入',
-          purpose: '金蛋',
-          category: '预算结余转存',
-          note: `${state.activePeriod}账期金蛋存入打卡`
+        const todayStr = getTodayStr();
+        const defDate =
+          todayStr >= report.periodRange.startDate && todayStr <= report.periodRange.endDate
+            ? todayStr
+            : report.periodRange.startDate;
+
+        openBottomSheet({
+          title: `🥚 ${m.toUpperCase()} 本期金蛋存入打卡`,
+          subtitle: `${state.activePeriod} 账期 · 固定金蛋 + 上期结余补足`,
+          banner: {
+            level: 'info',
+            html: `本期应存合计 <strong>¥${fm(mAlloc?.goldenEggTotal || 2000, false)}</strong> &nbsp;|&nbsp; 当前还需存入 <strong>¥${fm(stillNeed, false)}</strong>`
+          },
+          submitText: '🥚 确认打卡存入',
+          fields: [
+            {
+              key: 'amount',
+              label: '本次实际存入金额（元，支持加减算式）',
+              type: 'math',
+              value: String(defaultAmt),
+              quickChips: [
+                ...(stillNeed > 0 && stillNeed !== 2000 ? [{ label: `还需 ¥${stillNeed}`, value: String(stillNeed) }] : []),
+                { label: '保底 ¥2000', value: '2000' }
+              ]
+            },
+            {
+              key: 'date',
+              label: '存入日期',
+              type: 'date',
+              value: defDate
+            },
+            {
+              key: 'note',
+              label: '备注说明',
+              type: 'text',
+              value: `${state.activePeriod}账期金蛋存入打卡`
+            }
+          ],
+          onSubmit: (vals, showError) => {
+            const num = evalMathAmount(vals.amount);
+            if (isNaN(num) || num <= 0) {
+              showError('请输入大于 0 的有效存入金额');
+              return false;
+            }
+            state.data.transactions[m].push({
+              id: 'tx_' + Date.now(),
+              date: vals.date || report.periodRange.startDate,
+              amount: Engine.round2(num),
+              type: '存入',
+              purpose: '金蛋',
+              category: '预算结余转存',
+              note: (vals.note || '').trim() || `${state.activePeriod}账期金蛋存入打卡`,
+              updatedAt: new Date().toISOString()
+            });
+            saveData();
+            render();
+            showToast(`🥚 已记入 ${m.toUpperCase()} 金蛋存入 ¥${fm(num, false)}`);
+          }
         });
-        saveData();
-        render();
-        showToast(`🥚 已记入 ${m.toUpperCase()} 金蛋存入 ¥${fm(num, false)}`);
+      };
+    });
+
+    // 许愿池储蓄打卡存入（移动端抽屉面板）
+    main.querySelectorAll('[data-action="quickDepositWish"]').forEach((btn) => {
+      btn.onclick = () => {
+        const prefRole = localStorage.getItem(PREF_ROLE_KEY) === 'q' ? 'q' : 'c';
+        const cMonth = Math.round(report.budgets.c.wishMonthly || 0);
+        const qMonth = Math.round(report.budgets.q.wishMonthly || 0);
+        const todayStr = getTodayStr();
+        const defDate =
+          todayStr >= report.periodRange.startDate && todayStr <= report.periodRange.endDate
+            ? todayStr
+            : report.periodRange.startDate;
+
+        openBottomSheet({
+          title: '✨ 许愿池专户储蓄打卡',
+          subtitle: '将当月预留的许愿池资金存入专户，实时追踪心愿池余额',
+          banner: {
+            level: 'info',
+            html: `月度许愿池预留参考：<strong>c ¥${fm(cMonth, false)}/月</strong> · <strong>q ¥${fm(qMonth, false)}/月</strong>`
+          },
+          submitText: '✨ 确认存入许愿池',
+          fields: [
+            {
+              key: 'member',
+              label: '存入成员',
+              type: 'chips',
+              value: prefRole,
+              options: [
+                { label: `👦 c（月预留 ¥${fm(cMonth, false)}）`, value: 'c' },
+                { label: `👧 q（月预留 ¥${fm(qMonth, false)}）`, value: 'q' }
+              ]
+            },
+            {
+              key: 'amount',
+              label: '本次存入许愿池金额（元）',
+              type: 'math',
+              value: String((prefRole === 'q' ? qMonth : cMonth) || 500)
+            },
+            {
+              key: 'date',
+              label: '存入日期',
+              type: 'date',
+              value: defDate
+            },
+            {
+              key: 'note',
+              label: '备注说明',
+              type: 'text',
+              value: `${state.activePeriod}账期许愿池存入打卡`
+            }
+          ],
+          onFieldChange: (key, val, allVals) => {
+            if (key === 'member') {
+              const targetDef = val === 'q' ? qMonth : cMonth;
+              if (targetDef > 0) allVals.amount = String(targetDef);
+            }
+          },
+          onSubmit: (vals, showError) => {
+            const m = vals.member === 'q' ? 'q' : 'c';
+            const num = evalMathAmount(vals.amount);
+            if (isNaN(num) || num <= 0) {
+              showError('请输入大于 0 的有效存入金额');
+              return false;
+            }
+            state.data.transactions[m].push({
+              id: 'tx_' + Date.now(),
+              date: vals.date || defDate,
+              amount: Engine.round2(num),
+              type: '存入',
+              purpose: '许愿池',
+              category: '预算结余转存',
+              note: (vals.note || '').trim() || `${state.activePeriod}账期许愿池存入打卡`,
+              updatedAt: new Date().toISOString()
+            });
+            saveData();
+            render();
+            showToast(`✨ 已记入 ${m.toUpperCase()} 许愿池存入 ¥${fm(num, false)}`);
+          }
+        });
       };
     });
 
@@ -2148,12 +2722,14 @@
         state.addForm.role = 'dengbao';
         state.addForm.type = '支出';
         state.addForm.category = '孩子用品';
+        state.addForm.budgetItemId = '';
+        state.addForm.explicitNoBudgetItem = false;
         updateTabBarUI();
         render();
       };
     });
 
-    // 期初校正与固定金蛋弹窗设置
+    // 期初校正与固定金蛋抽屉设置（一次打开修改全部4项，告别连弹4次弹窗）
     main.querySelectorAll('[data-action="openPeriodOverride"]').forEach((btn) => {
       btn.onclick = () => {
         const pKey = state.activePeriod;
@@ -2161,24 +2737,66 @@
           c: { initAdjust: null, fixedGoldenEgg: 2000 },
           q: { initAdjust: null, fixedGoldenEgg: 2000 }
         });
-        const cFg = prompt(`设置【${pKey}账期】c 的固定金蛋金额（元）：`, ov.c?.fixedGoldenEgg ?? 2000);
-        if (cFg === null) return;
-        const qFg = prompt(`设置【${pKey}账期】q 的固定金蛋金额（元）：`, ov.q?.fixedGoldenEgg ?? 2000);
-        if (qFg === null) return;
-        const cAdj = prompt(`设置【${pKey}账期】c 的期初零花钱校正（留空则自动滚存上期结余）：`, ov.c?.initAdjust ?? '');
-        const qAdj = prompt(`设置【${pKey}账期】q 的期初零花钱校正（留空则自动滚存上期结余）：`, ov.q?.initAdjust ?? '');
 
-        ov.c = {
-          fixedGoldenEgg: Number(cFg) || 0,
-          initAdjust: cAdj === '' || cAdj === null ? null : Number(cAdj)
-        };
-        ov.q = {
-          fixedGoldenEgg: Number(qFg) || 0,
-          initAdjust: qAdj === '' || qAdj === null ? null : Number(qAdj)
-        };
-        saveData();
-        render();
-        showToast('已更新当期分配参数');
+        openBottomSheet({
+          title: `⚙️ ${pKey} 账期分配参数设置`,
+          subtitle: '设置当期固定金蛋保底与期初零花钱手工校正（留空则自动滚存上期结余）',
+          submitText: '💾 保存当期参数',
+          fields: [
+            {
+              key: 'cFg',
+              label: '👦 c 固定金蛋（元）',
+              type: 'math',
+              half: true,
+              value: String(ov.c?.fixedGoldenEgg ?? 2000)
+            },
+            {
+              key: 'qFg',
+              label: '👧 q 固定金蛋（元）',
+              type: 'math',
+              half: true,
+              value: String(ov.q?.fixedGoldenEgg ?? 2000)
+            },
+            {
+              key: 'cAdj',
+              label: '👦 c 期初零花钱校正',
+              type: 'text',
+              half: true,
+              placeholder: '留空自动滚存上期',
+              value: ov.c?.initAdjust !== null && ov.c?.initAdjust !== undefined ? String(ov.c.initAdjust) : ''
+            },
+            {
+              key: 'qAdj',
+              label: '👧 q 期初零花钱校正',
+              type: 'text',
+              half: true,
+              placeholder: '留空自动滚存上期',
+              value: ov.q?.initAdjust !== null && ov.q?.initAdjust !== undefined ? String(ov.q.initAdjust) : ''
+            }
+          ],
+          onSubmit: (vals, showError) => {
+            const cFgNum = vals.cFg === '' ? 0 : evalMathAmount(vals.cFg);
+            const qFgNum = vals.qFg === '' ? 0 : evalMathAmount(vals.qFg);
+            if (isNaN(cFgNum) || cFgNum < 0 || isNaN(qFgNum) || qFgNum < 0) {
+              showError('固定金蛋金额请填写非负有效数字');
+              return false;
+            }
+            const cAdjClean = String(vals.cAdj ?? '').trim();
+            const qAdjClean = String(vals.qAdj ?? '').trim();
+            const cAdjNum = cAdjClean === '' ? null : evalMathAmount(cAdjClean);
+            const qAdjNum = qAdjClean === '' ? null : evalMathAmount(qAdjClean);
+            if ((cAdjClean !== '' && isNaN(cAdjNum)) || (qAdjClean !== '' && isNaN(qAdjNum))) {
+              showError('期初校正请填写有效数字（或留空使用自动滚存）');
+              return false;
+            }
+
+            ov.c = { fixedGoldenEgg: cFgNum, initAdjust: cAdjNum };
+            ov.q = { fixedGoldenEgg: qFgNum, initAdjust: qAdjNum };
+            saveData();
+            render();
+            showToast('✅ 已更新当期分配参数');
+          }
+        });
       };
     });
 
@@ -2186,6 +2804,8 @@
     main.querySelectorAll('[data-role]').forEach((btn) => {
       btn.onclick = () => {
         state.addForm.role = btn.dataset.role;
+        state.addForm.budgetItemId = '';
+        state.addForm.explicitNoBudgetItem = false;
         localStorage.setItem(PREF_ROLE_KEY, state.addForm.role);
         if (state.addForm.role === 'dengbao') {
           state.addForm.category = '孩子用品';
@@ -2210,6 +2830,8 @@
         const validPurposes = getPurposeOptionsByType(state.addForm.type);
         if (!validPurposes.includes(state.addForm.purpose)) {
           state.addForm.purpose = validPurposes[0];
+          state.addForm.budgetItemId = '';
+          state.addForm.explicitNoBudgetItem = false;
         }
         render();
       };
@@ -2218,6 +2840,30 @@
     main.querySelectorAll('[data-purpose]').forEach((btn) => {
       btn.onclick = () => {
         state.addForm.purpose = btn.dataset.purpose;
+        state.addForm.budgetItemId = '';
+        state.addForm.explicitNoBudgetItem = false;
+        render();
+      };
+    });
+
+    main.querySelectorAll('[data-bitem]').forEach((btn) => {
+      btn.onclick = () => {
+        const bId = btn.dataset.bitem || '';
+        state.addForm.budgetItemId = bId;
+        state.addForm.explicitNoBudgetItem = bId === '';
+        if (bId && (state.addForm.role === 'c' || state.addForm.role === 'q')) {
+          const srcList =
+            state.addForm.purpose === '必要开支'
+              ? state.data.necessaryBudgets[state.addForm.role] || []
+              : state.data.wishBudgets[state.addForm.role] || [];
+          const found = srcList.find((x) => x.id === bId);
+          if (found && (!state.addForm.category || state.addForm.category === '餐饮外卖')) {
+            const suggested = suggestCategoryForBudgetItem(found.name, state.addForm.purpose);
+            if (suggested && (state.data.categories || []).includes(suggested)) {
+              state.addForm.category = suggested;
+            }
+          }
+        }
         render();
       };
     });
@@ -2237,6 +2883,8 @@
             state.addForm.payer = state.addForm.role;
             state.addForm.role = 'dengbao';
             state.addForm.category = '孩子用品';
+            state.addForm.budgetItemId = '';
+            state.addForm.explicitNoBudgetItem = false;
             render();
             return;
           }
@@ -2305,16 +2953,36 @@
 
     main.querySelectorAll('[data-action="addNewCategory"]').forEach((btn) => {
       btn.onclick = () => {
-        const name = prompt('请输入新分类名称：');
-        if (!name || !name.trim()) return;
-        const clean = name.trim();
-        const targetArr = state.addForm.role === 'dengbao' ? state.data.dengbaoCategories : state.data.categories;
-        if (!targetArr.includes(clean)) {
-          targetArr.push(clean);
-        }
-        state.addForm.category = clean;
-        saveData();
-        render();
+        const isDb = state.addForm.role === 'dengbao';
+        openBottomSheet({
+          title: `🏷️ 新增${isDb ? '噔宝' : '账本'}分类标签`,
+          subtitle: '新增后将自动加入分类快捷列表并同步云端',
+          submitText: '➕ 确认添加',
+          fields: [
+            {
+              key: 'name',
+              label: '分类名称',
+              type: 'text',
+              placeholder: isDb ? '例如：早教绘本、疫苗体检' : '例如：物业水电、宠物开销',
+              value: ''
+            }
+          ],
+          onSubmit: (vals, showError) => {
+            const clean = (vals.name || '').trim();
+            if (!clean) {
+              showError('请输入分类名称');
+              return false;
+            }
+            const targetArr = isDb ? state.data.dengbaoCategories : state.data.categories;
+            if (!targetArr.includes(clean)) {
+              targetArr.push(clean);
+            }
+            state.addForm.category = clean;
+            saveData();
+            render();
+            showToast(`🏷️ 已添加分类「${clean}」`);
+          }
+        });
       };
     });
 
@@ -2324,6 +2992,8 @@
         state.addForm.editingRole = null;
         state.addForm.amount = '';
         state.addForm.note = '';
+        state.addForm.budgetItemId = '';
+        state.addForm.explicitNoBudgetItem = false;
         render();
       };
     });
@@ -2346,15 +3016,17 @@
         }
 
         const newId = f.editingId || 'tx_' + Date.now();
+        const nowIso = new Date().toISOString();
         if (f.role === 'dengbao') {
           const item = {
             id: newId,
             date: f.date,
-            amount: numAmt,
+            amount: Engine.round2(numAmt),
             payer: f.payer || 'q',
             type: f.type,
             category: f.category || '孩子用品',
-            note: f.note || ''
+            note: f.note || '',
+            updatedAt: nowIso
           };
           const err = Engine.validateDengbaoTx(item);
           if (err) {
@@ -2366,12 +3038,26 @@
           const item = {
             id: newId,
             date: f.date,
-            amount: numAmt,
+            amount: Engine.round2(numAmt),
             type: f.type,
             purpose: f.purpose,
             category: f.category || '',
-            note: f.note || ''
+            note: f.note || '',
+            updatedAt: nowIso
           };
+          if ((f.type === '支出' || f.type === '退款') && (f.purpose === '必要开支' || f.purpose === '许愿池')) {
+            if (f.budgetItemId) {
+              const srcList =
+                f.purpose === '必要开支'
+                  ? state.data.necessaryBudgets[f.role] || []
+                  : state.data.wishBudgets[f.role] || [];
+              const subObj = srcList.find((x) => x.id === f.budgetItemId);
+              item.budgetItemId = f.budgetItemId;
+              if (subObj) item.budgetItemName = subObj.name;
+            } else if (f.explicitNoBudgetItem) {
+              item.budgetItemId = '';
+            }
+          }
           const err = Engine.validateMemberTx(item);
           if (err) {
             alert(err);
@@ -2388,6 +3074,8 @@
 
         state.addForm.amount = '';
         state.addForm.note = '';
+        state.addForm.budgetItemId = '';
+        state.addForm.explicitNoBudgetItem = false;
         state.addForm.editingId = null;
         state.addForm.editingRole = null;
 
@@ -2477,12 +3165,20 @@
         const role = btn.dataset.editRole;
         const target = (state.data.transactions[role] || []).find((t) => t.id === id);
         if (!target) return;
+        const enriched =
+          role === 'c' || role === 'q' ? (report.transactions[role] || []).find((t) => t.id === id) : null;
+        const initBudgetItemId =
+          target.budgetItemId !== undefined && target.budgetItemId !== null
+            ? target.budgetItemId
+            : enriched?.resolvedBudgetItemId || '';
         state.addForm = {
           role,
           date: target.date,
           amount: target.amount,
           type: target.type,
           purpose: target.purpose || '日常',
+          budgetItemId: initBudgetItemId,
+          explicitNoBudgetItem: target.budgetItemId === '',
           payer: target.payer || 'q',
           category: target.category || '',
           note: target.note || '',
@@ -2495,17 +3191,40 @@
       };
     });
 
-    // 噔宝额外额度调整
+    // 噔宝额外额度调整（抽屉面板）
     main.querySelectorAll('[data-action="setDengbaoExtra"]').forEach((btn) => {
       btn.onclick = () => {
         const pKey = state.activePeriod;
         const ov = (state.data.settings.periodOverrides[pKey] = state.data.settings.periodOverrides[pKey] || {});
-        const val = prompt(`设置【${pKey}账期】噔宝额外追加额度（元，例如首期为 3200）：`, ov.dengbaoExtraQuota || 0);
-        if (val === null) return;
-        ov.dengbaoExtraQuota = Number(val) || 0;
-        saveData();
-        render();
-        showToast('已更新噔宝当期额度');
+        openBottomSheet({
+          title: `👶 ${pKey} 账期噔宝追加额度`,
+          subtitle: '除每月基础预留额度外，可为当月设置额外追加预算（如首期 3200 元）',
+          submitText: '💾 保存额度',
+          fields: [
+            {
+              key: 'extra',
+              label: '当期额外追加额度（元）',
+              type: 'math',
+              value: String(ov.dengbaoExtraQuota || 0),
+              quickChips: [
+                { label: '无追加 (¥0)', value: '0' },
+                { label: '¥1000', value: '1000' },
+                { label: '首期 ¥3200', value: '3200' }
+              ]
+            }
+          ],
+          onSubmit: (vals, showError) => {
+            const num = vals.extra === '' ? 0 : evalMathAmount(vals.extra);
+            if (isNaN(num)) {
+              showError('请输入有效的金额数字');
+              return false;
+            }
+            ov.dengbaoExtraQuota = num;
+            saveData();
+            render();
+            showToast('✅ 已更新噔宝当期额度');
+          }
+        });
       };
     });
 
@@ -2526,18 +3245,50 @@
 
     main.querySelectorAll('[data-action="addNecessaryItem"]').forEach((btn) => {
       btn.onclick = () => {
-        const name = prompt(`新增 ${state.budgetRole.toUpperCase()} 的必要开支项目名称：`);
-        if (!name || !name.trim()) return;
-        const amt = prompt('请输入该项目的年度预算金额（元，如车位收租抵减可填负数）：', '1200');
-        state.data.necessaryBudgets[state.budgetRole].push({
-          id: 'nec_' + Date.now(),
-          name: name.trim(),
-          annualBudget: amt === '' || amt === null ? null : Number(amt),
-          oldSpent: null
+        const bRole = state.budgetRole;
+        openBottomSheet({
+          title: `➕ 新增 ${bRole.toUpperCase()} 必要开支预算项`,
+          subtitle: '新增后可在「记一笔 → 必要开支」中直接点选该子项进行精准对账',
+          submitText: '✅ 确认新增',
+          fields: [
+            {
+              key: 'name',
+              label: '项目名称（必填）',
+              type: 'text',
+              placeholder: '例如：物业费、电费、商业保险',
+              value: ''
+            },
+            {
+              key: 'amt',
+              label: '年度预算金额（元，抵减项可填负数）',
+              type: 'math',
+              placeholder: '例如：1200（留空表示暂不计入总额）',
+              value: '1200'
+            }
+          ],
+          onSubmit: (vals, showError) => {
+            const cleanName = (vals.name || '').trim();
+            if (!cleanName) {
+              showError('请填写必要开支项目名称');
+              return false;
+            }
+            const rawAmt = String(vals.amt ?? '').trim();
+            const parsedAmt = rawAmt === '' ? null : evalMathAmount(rawAmt);
+            if (rawAmt !== '' && isNaN(parsedAmt)) {
+              showError('请填写有效的年度预算金额（或留空）');
+              return false;
+            }
+            state.data.necessaryBudgets[bRole].push({
+              id: 'nec_' + Date.now(),
+              name: cleanName,
+              annualBudget: parsedAmt,
+              oldSpent: null
+            });
+            saveData();
+            render();
+            showToast('✅ 已新增必要开支预算项');
+          }
         });
-        saveData();
-        render();
-        showToast('已新增必要开支预算项');
       };
     });
 
@@ -2546,12 +3297,47 @@
         const id = btn.dataset.editNec;
         const item = state.data.necessaryBudgets[state.budgetRole].find((x) => x.id === id);
         if (!item) return;
-        const amt = prompt(`修改「${item.name}」的年度预算金额（元，留空表示暂不计入）：`, item.annualBudget ?? '');
-        if (amt === null) return;
-        item.annualBudget = amt.trim() === '' ? null : Number(amt);
-        saveData();
-        render();
-        showToast('已更新年度预算');
+        const isDengbaoItem = item.name === '噔宝';
+        openBottomSheet({
+          title: `✏️ 编辑必要开支项「${escHtml(item.name)}」`,
+          subtitle: isDengbaoItem
+            ? '「噔宝」子项会自动汇总噔宝专表中由该成员付款的净支出'
+            : '修改项目名称或年度预算额度（留空表示暂不计入总额）',
+          submitText: '💾 保存修改',
+          fields: [
+            {
+              key: 'name',
+              label: '项目名称',
+              type: isDengbaoItem ? 'readonly' : 'text',
+              value: item.name || ''
+            },
+            {
+              key: 'amt',
+              label: '年度预算金额（元，抵减项可填负数）',
+              type: 'math',
+              placeholder: '留空表示暂不计入',
+              value: item.annualBudget !== null && item.annualBudget !== undefined ? String(item.annualBudget) : ''
+            }
+          ],
+          onSubmit: (vals, showError) => {
+            const cleanName = isDengbaoItem ? '噔宝' : (vals.name || '').trim();
+            if (!cleanName) {
+              showError('项目名称不能为空');
+              return false;
+            }
+            const rawAmt = String(vals.amt ?? '').trim();
+            const parsedAmt = rawAmt === '' ? null : evalMathAmount(rawAmt);
+            if (rawAmt !== '' && isNaN(parsedAmt)) {
+              showError('请输入有效的数字金额（或留空）');
+              return false;
+            }
+            item.name = cleanName;
+            item.annualBudget = parsedAmt;
+            saveData();
+            render();
+            showToast('✅ 已更新必要开支预算');
+          }
+        });
       };
     });
 
@@ -2569,20 +3355,70 @@
 
     main.querySelectorAll('[data-action="addWishItem"]').forEach((btn) => {
       btn.onclick = () => {
-        const name = prompt(`新增 ${state.budgetRole.toUpperCase()} 的许愿池愿望名称：`);
-        if (!name || !name.trim()) return;
-        const amt = prompt('请输入该愿望的年度目标金额（元）：', '3000');
-        const months = prompt('请输入分摊月数（正整数，默认12）：', '12');
-        state.data.wishBudgets[state.budgetRole].push({
-          id: 'wish_' + Date.now(),
-          name: name.trim(),
-          annualQuota: amt === '' || amt === null ? null : Number(amt),
-          months: Number(months) || 12,
-          note: ''
+        const bRole = state.budgetRole;
+        openBottomSheet({
+          title: `✨ 新增 ${bRole.toUpperCase()} 许愿池愿望`,
+          subtitle: '设置心愿目标与分摊月数，系统自动计算每月应预留心愿金',
+          submitText: '✨ 确认许愿',
+          fields: [
+            {
+              key: 'name',
+              label: '愿望名称（必填）',
+              type: 'text',
+              placeholder: '例如：日本旅行、新相机、演唱会门票',
+              value: ''
+            },
+            {
+              key: 'amt',
+              label: '年度目标金额（元）',
+              type: 'math',
+              half: true,
+              value: '3000'
+            },
+            {
+              key: 'months',
+              label: '分摊月数',
+              type: 'number',
+              half: true,
+              value: '12',
+              quickChips: [
+                { label: '6个月', value: '6' },
+                { label: '12个月', value: '12' }
+              ]
+            },
+            {
+              key: 'note',
+              label: '心愿备注（选填）',
+              type: 'text',
+              placeholder: '例如：预计明年五一出行',
+              value: ''
+            }
+          ],
+          onSubmit: (vals, showError) => {
+            const cleanName = (vals.name || '').trim();
+            if (!cleanName) {
+              showError('请填写愿望名称');
+              return false;
+            }
+            const rawAmt = String(vals.amt ?? '').trim();
+            const parsedAmt = rawAmt === '' ? null : evalMathAmount(rawAmt);
+            if (rawAmt !== '' && (isNaN(parsedAmt) || parsedAmt < 0)) {
+              showError('请填写有效的非负目标金额');
+              return false;
+            }
+            const mNum = Math.max(1, Math.round(Number(vals.months) || 12));
+            state.data.wishBudgets[bRole].push({
+              id: 'wish_' + Date.now(),
+              name: cleanName,
+              annualQuota: parsedAmt,
+              months: mNum,
+              note: (vals.note || '').trim()
+            });
+            saveData();
+            render();
+            showToast('✨ 已新增许愿池愿望');
+          }
         });
-        saveData();
-        render();
-        showToast('已新增许愿池项目');
       };
     });
 
@@ -2591,15 +3427,64 @@
         const id = btn.dataset.editWish;
         const item = state.data.wishBudgets[state.budgetRole].find((x) => x.id === id);
         if (!item) return;
-        const amt = prompt(`修改愿望「${item.name}」的年度额度（元）：`, item.annualQuota ?? '');
-        if (amt === null) return;
-        const months = prompt(`修改「${item.name}」的分摊月数：`, item.months ?? 12);
-        if (months === null) return;
-        item.annualQuota = amt.trim() === '' ? null : Number(amt);
-        item.months = Number(months) || 12;
-        saveData();
-        render();
-        showToast('已更新愿望配置');
+        openBottomSheet({
+          title: `✏️ 编辑愿望「${escHtml(item.name)}」`,
+          subtitle: '调整心愿年度额度与分摊月数',
+          submitText: '💾 保存愿望',
+          fields: [
+            {
+              key: 'name',
+              label: '愿望名称',
+              type: 'text',
+              value: item.name || ''
+            },
+            {
+              key: 'amt',
+              label: '年度目标金额（元）',
+              type: 'math',
+              half: true,
+              placeholder: '留空暂不计入',
+              value: item.annualQuota !== null && item.annualQuota !== undefined ? String(item.annualQuota) : ''
+            },
+            {
+              key: 'months',
+              label: '分摊月数',
+              type: 'number',
+              half: true,
+              value: String(item.months || 12),
+              quickChips: [
+                { label: '6个月', value: '6' },
+                { label: '12个月', value: '12' }
+              ]
+            },
+            {
+              key: 'note',
+              label: '心愿备注（选填）',
+              type: 'text',
+              value: item.note || ''
+            }
+          ],
+          onSubmit: (vals, showError) => {
+            const cleanName = (vals.name || '').trim();
+            if (!cleanName) {
+              showError('愿望名称不能为空');
+              return false;
+            }
+            const rawAmt = String(vals.amt ?? '').trim();
+            const parsedAmt = rawAmt === '' ? null : evalMathAmount(rawAmt);
+            if (rawAmt !== '' && (isNaN(parsedAmt) || parsedAmt < 0)) {
+              showError('请填写有效的非负金额（或留空）');
+              return false;
+            }
+            item.name = cleanName;
+            item.annualQuota = parsedAmt;
+            item.months = Math.max(1, Math.round(Number(vals.months) || 12));
+            item.note = (vals.note || '').trim();
+            saveData();
+            render();
+            showToast('✅ 已更新愿望配置');
+          }
+        });
       };
     });
 
@@ -2616,18 +3501,90 @@
     main.querySelectorAll('[data-action="editYearEndConfig"]').forEach((btn) => {
       btn.onclick = () => {
         const ye = state.data.settings.yearEnd;
-        const cNec = prompt('c 必要开支前期未录流水净消费（全年已录全请填 0）：', ye.c.priorNecessary ?? 0);
-        if (cNec === null) return;
-        const cWish = prompt('c 许愿池前期未录流水净消费（全年已录全请填 0）：', ye.c.priorWish ?? 0);
-        const qNec = prompt('q 必要开支前期未录流水净消费（全年已录全请填 0）：', ye.q.priorNecessary ?? 0);
-        const qWish = prompt('q 许愿池前期未录流水净消费（全年已录全请填 0）：', ye.q.priorWish ?? 0);
-        ye.c.priorNecessary = cNec === '' ? null : Number(cNec);
-        ye.c.priorWish = cWish === '' ? null : Number(cWish);
-        ye.q.priorNecessary = qNec === '' ? null : Number(qNec);
-        ye.q.priorWish = qWish === '' ? null : Number(qWish);
-        saveData();
-        render();
-        showToast('已更新前期消费与年末核算参数');
+        const fmtOpt = (v) => (v !== null && v !== undefined && v !== '' ? String(v) : '');
+        openBottomSheet({
+          title: '🏦 前期未录消费与年末实有资金设置',
+          subtitle: '若全年流水均在本账本完整记录，前期未录消费请填 0；年末盘点时填入实有资金自动算出可转存额度',
+          submitText: '💾 保存核算参数',
+          fields: [
+            {
+              key: 'cNec',
+              label: '👦 c 必要前期未录消费',
+              type: 'math',
+              half: true,
+              placeholder: '已录全填 0',
+              value: fmtOpt(ye.c?.priorNecessary ?? 0)
+            },
+            {
+              key: 'qNec',
+              label: '👧 q 必要前期未录消费',
+              type: 'math',
+              half: true,
+              placeholder: '已录全填 0',
+              value: fmtOpt(ye.q?.priorNecessary ?? 0)
+            },
+            {
+              key: 'cWish',
+              label: '👦 c 许愿池前期消费',
+              type: 'math',
+              half: true,
+              placeholder: '已录全填 0',
+              value: fmtOpt(ye.c?.priorWish ?? 0)
+            },
+            {
+              key: 'qWish',
+              label: '👧 q 许愿池前期消费',
+              type: 'math',
+              half: true,
+              placeholder: '已录全填 0',
+              value: fmtOpt(ye.q?.priorWish ?? 0)
+            },
+            {
+              key: 'cActual',
+              label: '👦 c 年末专户实有资金',
+              type: 'math',
+              half: true,
+              placeholder: '年末盘点时填写',
+              value: fmtOpt(ye.c?.actualYearEndFunds)
+            },
+            {
+              key: 'qActual',
+              label: '👧 q 年末专户实有资金',
+              type: 'math',
+              half: true,
+              placeholder: '年末盘点时填写',
+              value: fmtOpt(ye.q?.actualYearEndFunds)
+            }
+          ],
+          onSubmit: (vals, showError) => {
+            const parseOpt = (raw) => {
+              const s = String(raw ?? '').trim();
+              if (s === '') return null;
+              return evalMathAmount(s);
+            };
+            const cNec = parseOpt(vals.cNec);
+            const qNec = parseOpt(vals.qNec);
+            const cWish = parseOpt(vals.cWish);
+            const qWish = parseOpt(vals.qWish);
+            const cAct = parseOpt(vals.cActual);
+            const qAct = parseOpt(vals.qActual);
+            if ([cNec, qNec, cWish, qWish, cAct, qAct].some((x) => x !== null && isNaN(x))) {
+              showError('请填写有效的数字金额（未盘点项可留空）');
+              return false;
+            }
+            ye.c = ye.c || {};
+            ye.q = ye.q || {};
+            ye.c.priorNecessary = cNec;
+            ye.c.priorWish = cWish;
+            ye.c.actualYearEndFunds = cAct;
+            ye.q.priorNecessary = qNec;
+            ye.q.priorWish = qWish;
+            ye.q.actualYearEndFunds = qAct;
+            saveData();
+            render();
+            showToast('✅ 已更新前期消费与年末核算参数');
+          }
+        });
       };
     });
 
@@ -2677,7 +3634,113 @@
             showToast('🔗 已复制专属绑定链接！直接微信发给老婆打开即可');
           });
         } else {
-          prompt('请复制以下专属链接发给老婆（她点开即自动完成云同步配置）：', shareUrl);
+          openBottomSheet({
+            title: '🔗 老婆手机一键绑定链接',
+            subtitle: '长按复制下方完整链接发给老婆，她在微信/浏览器点开即自动绑定云账本',
+            submitText: '我知道了',
+            hideCancel: true,
+            fields: [
+              {
+                key: 'url',
+                label: '专属绑定链接',
+                type: 'readonly',
+                value: shareUrl
+              }
+            ]
+          });
+        }
+      };
+    });
+
+    main.querySelectorAll('[data-action="restoreCloudSnapshot"]').forEach((btn) => {
+      btn.onclick = async () => {
+        const cfg = state.cloudCfg;
+        if (!(cfg.provider === 'github' || cfg.provider === 'gitee') || !cfg.token || !cfg.gistId) {
+          alert('请先完成 GitHub / Gitee 云端同步配置！');
+          return;
+        }
+        showToast('⏳ 正在读取云端历史快照列表...');
+        try {
+          const ts = Date.now();
+          const apiUrl =
+            cfg.provider === 'github'
+              ? `https://api.github.com/gists/${cfg.gistId}?_t=${ts}`
+              : `https://gitee.com/api/v5/gists/${cfg.gistId}?access_token=${encodeURIComponent(cfg.token)}&_t=${ts}`;
+          const headers =
+            cfg.provider === 'github'
+              ? { Authorization: `token ${cfg.token}`, Accept: 'application/vnd.github.v3+json' }
+              : {};
+          const res = await fetch(apiUrl, { headers, cache: 'no-store' });
+          if (!res.ok) throw new Error('拉取失败');
+          const gist = await res.json();
+          const files = gist.files || {};
+          const snapKeys = Object.keys(files)
+            .filter((k) => k.startsWith('z_snapshot_') && k.endsWith('.json'))
+            .sort()
+            .reverse();
+
+          if (snapKeys.length === 0) {
+            alert('当前云端暂未生成历史快照文件。每次正常同步保存时，系统会自动按月归档快照。');
+            return;
+          }
+
+          const options = snapKeys.map((k) => {
+            let label = k.replace(/^z_snapshot_/, '').replace(/\.json$/, '');
+            try {
+              const parsed = files[k].content ? JSON.parse(files[k].content) : null;
+              const txCount = parsed?.transactions
+                ? (parsed.transactions.c?.length || 0) +
+                  (parsed.transactions.q?.length || 0) +
+                  (parsed.transactions.dengbao?.length || 0)
+                : 0;
+              if (k.includes('_before_reset')) {
+                label = `🛡️ 重置前自动保护备份 (${txCount}笔流水)`;
+              } else {
+                const mMatch = k.match(/(\d{4}-\d{2})\.json$/);
+                label = `📅 ${mMatch ? mMatch[1] + ' 账期快照' : label} (${txCount}笔流水)`;
+              }
+            } catch (e) {}
+            return { label, value: k };
+          });
+
+          openBottomSheet({
+            title: '🕰️ 从云端历史快照恢复',
+            subtitle: '恢复前系统仍会先保护当前状态，防止误操作丢失数据',
+            submitText: '🔄 确认恢复所选快照',
+            fields: [
+              {
+                key: 'snapKey',
+                label: '选择要恢复的云端备份版本',
+                type: 'chips',
+                value: options[0].value,
+                options
+              }
+            ],
+            onSubmit: (vals, showError) => {
+              const chosen = files[vals.snapKey];
+              if (!chosen || !chosen.content) {
+                showError('所选快照内容为空或需重新拉取');
+                return false;
+              }
+              try {
+                const snapObj = JSON.parse(chosen.content);
+                if (!snapObj || !snapObj.transactions) {
+                  showError('快照数据格式异常');
+                  return false;
+                }
+                const preRestoreCopy = JSON.parse(JSON.stringify(state.data));
+                state.data = normalizeLoadedData(snapObj);
+                saveData(true, { forceOverwrite: true, preResetData: preRestoreCopy });
+                render();
+                showToast('✅ 已成功从云端快照恢复账本！');
+              } catch (err) {
+                showError('解析云端快照失败');
+                return false;
+              }
+            }
+          });
+        } catch (e) {
+          alert('读取云端快照失败，请检查网络连接与 Token 配置。');
         }
       };
     });
@@ -2697,11 +3760,11 @@
 
     main.querySelectorAll('[data-action="exportCsv"]').forEach((btn) => {
       btn.onclick = () => {
-        const rows = [['账本', '日期', '所属账期', '金额(元)', '收支类型', '用途/付款人', '分类标签', '备注说明']];
+        const rows = [['账本', '日期', '所属账期', '金额(元)', '收支类型', '用途/付款人', '对应预算子项', '分类标签', '备注说明']];
         const allTx = [
-          ...report.transactions.c.map((t) => ['c记账', t.date, t.periodKey, t.amount, t.type, t.purpose, t.category || '', t.note || '']),
-          ...report.transactions.q.map((t) => ['q记账', t.date, t.periodKey, t.amount, t.type, t.purpose, t.category || '', t.note || '']),
-          ...report.transactions.dengbao.map((t) => ['噔宝支出', t.date, t.periodKey, t.amount, t.type, `${t.payer}付款`, t.category || '', t.note || ''])
+          ...report.transactions.c.map((t) => ['c记账', t.date, t.periodKey, t.amount, t.type, t.purpose, t.resolvedBudgetItemName || '', t.category || '', t.note || '']),
+          ...report.transactions.q.map((t) => ['q记账', t.date, t.periodKey, t.amount, t.type, t.purpose, t.resolvedBudgetItemName || '', t.category || '', t.note || '']),
+          ...report.transactions.dengbao.map((t) => ['噔宝支出', t.date, t.periodKey, t.amount, t.type, `${t.payer}付款`, '噔宝', t.category || '', t.note || ''])
         ];
         allTx.forEach((r) => rows.push(r));
         const csvContent =
@@ -2768,11 +3831,12 @@
 
     main.querySelectorAll('[data-action="resetInitial"]').forEach((btn) => {
       btn.onclick = () => {
-        if (!confirm('确定要重置为 Excel 初始预置数据吗？当前新增的未备份修改将被覆盖。')) return;
+        if (!confirm('确定要重置为 Excel 初始预置数据吗？系统将先在云端自动保存一份「重置前备份快照」，可在双人同步页随时恢复。')) return;
+        const preResetCopy = JSON.parse(JSON.stringify(state.data));
         state.data = normalizeLoadedData(JSON.parse(JSON.stringify(Engine.INITIAL_DATA)));
-        saveData();
+        saveData(true, { forceOverwrite: true, preResetData: preResetCopy });
         render();
-        showToast('已恢复为 Excel 初始账本数据');
+        showToast('✅ 已恢复初始账本（重置前数据已自动归档云端快照）');
       };
     });
 
@@ -2786,6 +3850,7 @@
       const openEl = document.getElementById('cfOpenDateInput');
       const expEl = document.getElementById('cfExpiryDateInput');
       const noteEl = document.getElementById('cfNoteInput');
+      const recEl = document.getElementById('cfRecordedChk');
       if (nameEl) cf.name = nameEl.value;
       if (priceEl) cf.price = priceEl.value;
       if (totalEl) cf.totalValue = totalEl.value;
@@ -2793,6 +3858,7 @@
       if (openEl) cf.openDate = openEl.value;
       if (expEl) cf.expiryDate = expEl.value;
       if (noteEl) cf.note = noteEl.value;
+      if (recEl) cf.recordedInLedger = !!recEl.checked;
     }
 
     main.querySelectorAll('[data-action="jumpCardsAlert"]').forEach((el) => {
@@ -2868,7 +3934,16 @@
       syncChk.onchange = (e) => {
         syncCardFormFromDOM();
         state.cardForm.syncToLedger = e.target.checked;
+        if (e.target.checked) state.cardForm.recordedInLedger = true;
         render();
+      };
+    }
+
+    const recChk = document.getElementById('cfRecordedChk');
+    if (recChk) {
+      recChk.onchange = (e) => {
+        syncCardFormFromDOM();
+        state.cardForm.recordedInLedger = !!e.target.checked;
       };
     }
 
@@ -2948,10 +4023,12 @@
             target.openDate = cf.openDate || getTodayStr();
             target.expiryDate = cf.expiryDate || '';
             target.note = (cf.note || '').trim();
+            target.recordedInLedger = !!cf.recordedInLedger;
             target.updatedAt = nowIso;
           }
           showToast('✅ 已保存会员储值卡修改');
         } else {
+          const syncedToLedgerNow = !!(cf.syncToLedger && priceNum > 0);
           const newCard = {
             id: 'card_' + Date.now(),
             name: cleanName,
@@ -2963,6 +4040,7 @@
             openDate: cf.openDate || getTodayStr(),
             expiryDate: cf.expiryDate || '',
             note: (cf.note || '').trim(),
+            recordedInLedger: !!(syncedToLedgerNow || cf.recordedInLedger),
             archived: false,
             updatedAt: nowIso,
             logs: [
@@ -2973,25 +4051,27 @@
                 delta: cf.cardType === 'period' ? null : Engine.round2(remVal),
                 paidPrice: Engine.round2(priceNum),
                 afterRemaining: cf.cardType === 'period' ? null : Engine.round2(remVal),
-                note: `首次办卡（实付 ¥${Engine.round2(priceNum)}）`
+                note: `首次办卡（实付 ¥${fm(priceNum, false)}${syncedToLedgerNow ? ' · 已同步记入账单' : ''}）`
               }
             ]
           };
           state.data.memberCards.push(newCard);
 
           // 可选：同步记入一笔家庭账单支出流水
-          if (cf.syncToLedger && priceNum > 0) {
+          if (syncedToLedgerNow) {
             const txDate = cf.openDate || getTodayStr();
             const expText = cf.expiryDate ? `有效期至${cf.expiryDate}` : '长期有效';
+            const curPref = localStorage.getItem(PREF_ROLE_KEY) === 'q' ? 'q' : 'c';
             if (cf.ledgerRole === 'dengbao') {
               state.data.transactions.dengbao.push({
                 id: 'tx_' + Date.now(),
                 date: txDate,
                 amount: Engine.round2(priceNum),
-                payer: savedPrefRole === 'q' ? 'q' : 'c',
+                payer: curPref,
                 type: '支出',
                 category: '孩子用品',
-                note: `[办卡] ${cleanName} (${expText})`
+                note: `[办卡] ${cleanName} (${expText})`,
+                updatedAt: nowIso
               });
             } else {
               const role = cf.ledgerRole === 'q' ? 'q' : 'c';
@@ -3002,7 +4082,8 @@
                 type: '支出',
                 purpose: cf.ledgerPurpose || '日常',
                 category: '订阅会员',
-                note: `[办卡] ${cleanName} (${expText})`
+                note: `[办卡] ${cleanName} (${expText})`,
+                updatedAt: nowIso
               });
             }
           }
@@ -3035,7 +4116,7 @@
       };
     });
 
-    // 扣减储值余额 / 划次消费
+    // 扣减储值余额 / 划次消费（底部抽屉面板 + 已入账防重记保护）
     main.querySelectorAll('[data-card-use]').forEach((btn) => {
       btn.onclick = () => {
         const id = btn.dataset.cardUse;
@@ -3043,90 +4124,360 @@
         if (!card) return;
         const isTimes = card.cardType === 'times';
         const unit = isTimes ? '次' : '元';
-        const rawVal = prompt(
-          `${isTimes ? '✂️ 划次消费' : '💸 储值卡扣款'} — 【${card.name}】\n当前剩余: ${card.remainingValue} ${unit}\n请输入本次消费扣除${isTimes ? '次数' : '金额（元）'}：`,
-          isTimes ? '1' : ''
+        const curRem = Number(card.remainingValue) || 0;
+        const isRecorded = !!(
+          card.recordedInLedger ||
+          (Array.isArray(card.logs) && card.logs.some((lg) => lg && String(lg.note || '').includes('已同步记入账单')))
         );
-        if (rawVal === null || rawVal.trim() === '') return;
-        const deduct = evalMathAmount(rawVal);
-        if (isNaN(deduct) || deduct <= 0) {
-          alert('请输入大于 0 的有效数值！');
-          return;
-        }
-        const memo = prompt('本次使用备注（选填，直接点确定可跳过）：', '') || '';
-        card.remainingValue = Engine.round2(Math.max(0, (Number(card.remainingValue) || 0) - deduct));
-        card.updatedAt = new Date().toISOString();
-        card.logs = Array.isArray(card.logs) ? card.logs : [];
-        card.logs.push({
-          id: 'clog_' + Date.now(),
-          date: getTodayStr(),
-          action: isTimes ? '划次消费' : '扣款消费',
-          delta: -Engine.round2(deduct),
-          afterRemaining: card.remainingValue,
-          note: memo.trim() || (isTimes ? '划次消费' : '卡内扣款')
+        const defRole =
+          card.owner === 'c' || card.owner === 'q' || card.owner === 'dengbao'
+            ? card.owner
+            : localStorage.getItem(PREF_ROLE_KEY) === 'q'
+            ? 'q'
+            : 'c';
+        const estUnitCost =
+          isTimes && Number(card.totalValue) > 0 && Number(card.price) > 0
+            ? Math.round(Number(card.price) / Number(card.totalValue))
+            : '';
+
+        openBottomSheet({
+          title: `${isTimes ? '✂️ 划次消费' : '💸 储值卡扣款'} — ${escHtml(card.name)}`,
+          subtitle: `当前卡内剩余：${fm(curRem, false)} ${unit}`,
+          banner: isRecorded
+            ? {
+                level: 'ok',
+                html: '🧾 <strong>防重复记账提醒：</strong>该卡充卡实付费用已在家庭账单入账，本次仅扣减卡内额度，<strong>无需再去账单重复记一笔支出！</strong>'
+              }
+            : {
+                level: 'info',
+                html: 'ℹ️ 该卡充卡时未记入账单流水。若你想按每次实际使用记入当月消费，可勾选下方同步开关。'
+              },
+          submitText: isTimes ? '✂️ 确认划次' : '💸 确认扣款',
+          fields: [
+            {
+              key: 'deduct',
+              label: `本次扣除${isTimes ? '次数（次）' : '卡内金额（元，支持加减算式）'}`,
+              type: 'math',
+              value: isTimes ? '1' : '',
+              placeholder: isTimes ? '例如：1' : '请输入本次刷卡扣减金额',
+              quickChips: isTimes
+                ? [
+                    { label: '划 1 次', value: '1' },
+                    { label: '划 2 次', value: '2' }
+                  ]
+                : undefined
+            },
+            {
+              key: 'date',
+              label: '使用日期',
+              type: 'date',
+              value: getTodayStr()
+            },
+            {
+              key: 'memo',
+              label: '使用备注（选填）',
+              type: 'text',
+              placeholder: isTimes ? '例如：周末带娃游泳 / 剪发' : '例如：门店消费结账',
+              value: ''
+            },
+            ...(isRecorded
+              ? []
+              : [
+                  {
+                    key: 'syncUseToLedger',
+                    label: '同时把本次消费同步记入当期家庭账单流水',
+                    type: 'checkbox',
+                    value: false,
+                    hint: '仅对充卡时未入账的旧卡按次记账时勾选'
+                  },
+                  ...(isTimes
+                    ? [
+                        {
+                          key: 'ledgerAmt',
+                          label: '折算记入账单金额（元）',
+                          type: 'math',
+                          value: estUnitCost ? String(estUnitCost) : '',
+                          placeholder: '请输入本次划次对应的折算金额',
+                          showWhen: (v) => !!v.syncUseToLedger
+                        }
+                      ]
+                    : []),
+                  {
+                    key: 'ledgerRole',
+                    label: '记入谁的账本',
+                    type: 'chips',
+                    value: defRole,
+                    options: [
+                      { label: '👦 c 记账', value: 'c' },
+                      { label: '👧 q 记账', value: 'q' },
+                      { label: '👶 噔宝支出', value: 'dengbao' }
+                    ],
+                    showWhen: (v) => !!v.syncUseToLedger
+                  },
+                  {
+                    key: 'ledgerPurpose',
+                    label: '账单资金用途',
+                    type: 'chips',
+                    value: '日常',
+                    options: [
+                      { label: '日常', value: '日常' },
+                      { label: '必要开支', value: '必要开支' },
+                      { label: '许愿池', value: '许愿池' }
+                    ],
+                    showWhen: (v) => !!v.syncUseToLedger && v.ledgerRole !== 'dengbao'
+                  }
+                ])
+          ],
+          onSubmit: (vals, showError) => {
+            const deduct = evalMathAmount(vals.deduct);
+            if (isNaN(deduct) || deduct <= 0) {
+              showError(`请输入大于 0 的扣除${unit}数`);
+              return false;
+            }
+            const useDate = vals.date || getTodayStr();
+            const nowIso = new Date().toISOString();
+            let txAmt = deduct;
+            if (!isRecorded && vals.syncUseToLedger) {
+              if (isTimes) {
+                txAmt = evalMathAmount(vals.ledgerAmt);
+                if (isNaN(txAmt) || txAmt <= 0) {
+                  showError('请填写大于 0 的折算记账金额');
+                  return false;
+                }
+              } else if (Number(card.totalValue) > 0 && Number(card.price) > 0 && card.totalValue !== card.price) {
+                // 若充500送100，按实付折扣比例折算真实支出，更贴近实际花销
+                txAmt = Engine.round2(deduct * (Number(card.price) / Number(card.totalValue)));
+              }
+            }
+
+            card.remainingValue = Engine.round2(Math.max(0, curRem - deduct));
+            card.updatedAt = nowIso;
+            card.logs = Array.isArray(card.logs) ? card.logs : [];
+            const cleanMemo = (vals.memo || '').trim();
+            card.logs.push({
+              id: 'clog_' + Date.now(),
+              date: useDate,
+              action: isTimes ? '划次消费' : '扣款消费',
+              delta: -Engine.round2(deduct),
+              afterRemaining: card.remainingValue,
+              note:
+                (cleanMemo || (isTimes ? '划次消费' : '卡内扣款')) +
+                (!isRecorded && vals.syncUseToLedger ? `（已按 ¥${fm(txAmt, false)} 记账）` : '')
+            });
+
+            if (!isRecorded && vals.syncUseToLedger && txAmt > 0) {
+              const curPref = localStorage.getItem(PREF_ROLE_KEY) === 'q' ? 'q' : 'c';
+              const txNote = `[卡消] ${card.name}${cleanMemo ? ' · ' + cleanMemo : ''}`;
+              if (vals.ledgerRole === 'dengbao') {
+                state.data.transactions.dengbao.push({
+                  id: 'tx_' + Date.now(),
+                  date: useDate,
+                  amount: Engine.round2(txAmt),
+                  payer: curPref,
+                  type: '支出',
+                  category: '孩子用品',
+                  note: txNote,
+                  updatedAt: nowIso
+                });
+              } else {
+                const role = vals.ledgerRole === 'q' ? 'q' : 'c';
+                state.data.transactions[role].push({
+                  id: 'tx_' + Date.now(),
+                  date: useDate,
+                  amount: Engine.round2(txAmt),
+                  type: '支出',
+                  purpose: vals.ledgerPurpose || '日常',
+                  category: '其他',
+                  note: txNote,
+                  updatedAt: nowIso
+                });
+              }
+            }
+
+            saveData();
+            render();
+            showToast(`✅ 已扣 ${fm(deduct, false)}${unit}，剩余 ${fm(card.remainingValue, false)}${unit}`);
+          }
         });
-        saveData();
-        render();
-        showToast(`✅ 已扣除 ${deduct}${unit}，当前剩余 ${card.remainingValue}${unit}`);
       };
     });
 
-    // 续充 / 续期延期
+    // 续充 / 续期延期（底部抽屉面板 + 可选同步账单）
     main.querySelectorAll('[data-card-topup]').forEach((btn) => {
       btn.onclick = () => {
         const id = btn.dataset.cardTopup;
         const card = (state.data.memberCards || []).find((x) => x.id === id);
         if (!card) return;
-        const paidRaw = prompt(`➕ 【${card.name}】续充/续费\n请输入本次续充实付价格（元，仅免费延期可填 0）：`, '0');
-        if (paidRaw === null) return;
-        const paid = evalMathAmount(paidRaw) || 0;
-        if (paid < 0) {
-          alert('实付价格不能为负数');
-          return;
-        }
+        const baseExpDate =
+          card.expiryDate && card.expiryDate > getTodayStr() ? card.expiryDate : getTodayStr();
+        const suggestedExp = card.expiryDate ? addMonthsToDateStr(baseExpDate, 12) : '';
+        const defRole =
+          card.owner === 'c' || card.owner === 'q' || card.owner === 'dengbao'
+            ? card.owner
+            : localStorage.getItem(PREF_ROLE_KEY) === 'q'
+            ? 'q'
+            : 'c';
 
-        let addVal = 0;
-        if (card.cardType === 'stored') {
-          const addRaw = prompt('请输入本次卡内新增到账金额（元）：', String(paid || ''));
-          if (addRaw === null) return;
-          addVal = evalMathAmount(addRaw) || 0;
-        } else if (card.cardType === 'times') {
-          const addRaw = prompt('请输入本次新增次数（次）：', '10');
-          if (addRaw === null) return;
-          addVal = evalMathAmount(addRaw) || 0;
-        }
+        openBottomSheet({
+          title: `${card.cardType === 'period' ? '🔄 会员续费延期' : '➕ 储值卡续充 / 延期'} — ${escHtml(card.name)}`,
+          subtitle: '支持单独免费延期（实付填 0）或续充值并同步记入家庭账单',
+          submitText: '💳 确认保存续充',
+          fields: [
+            {
+              key: 'paid',
+              label: '本次续充实付价格（元，免费延期填 0）',
+              type: 'math',
+              half: card.cardType !== 'period',
+              value: '0'
+            },
+            ...(card.cardType === 'stored'
+              ? [
+                  {
+                    key: 'addVal',
+                    label: '卡内新增到账面额（元）',
+                    type: 'math',
+                    half: true,
+                    placeholder: '留空则默认等于实付金额',
+                    value: ''
+                  }
+                ]
+              : card.cardType === 'times'
+              ? [
+                  {
+                    key: 'addVal',
+                    label: '本次新增次数（次）',
+                    type: 'number',
+                    half: true,
+                    value: '10'
+                  }
+                ]
+              : []),
+            {
+              key: 'expiryDate',
+              label: '更新后的保质期 / 有效期至（留空为长期有效）',
+              type: 'date',
+              value: suggestedExp,
+              quickChips: [
+                { label: '♾️ 长期有效', value: '' },
+                { label: '+半年', value: addMonthsToDateStr(baseExpDate, 6) },
+                { label: '+1年', value: addMonthsToDateStr(baseExpDate, 12) },
+                { label: '+2年', value: addMonthsToDateStr(baseExpDate, 24) }
+              ]
+            },
+            {
+              key: 'syncTopupToLedger',
+              label: '同时把本次续充实付金额记入当期家庭账单流水',
+              type: 'checkbox',
+              value: !!card.recordedInLedger,
+              hint: '若实付金额大于 0，勾选后自动同步生成账单支出并标记「🧾 已入账单」'
+            },
+            {
+              key: 'ledgerRole',
+              label: '记入谁的账本',
+              type: 'chips',
+              value: defRole,
+              options: [
+                { label: '👦 c 记账', value: 'c' },
+                { label: '👧 q 记账', value: 'q' },
+                { label: '👶 噔宝支出', value: 'dengbao' }
+              ],
+              showWhen: (v) => !!v.syncTopupToLedger
+            },
+            {
+              key: 'ledgerPurpose',
+              label: '账单资金用途',
+              type: 'chips',
+              value: '日常',
+              options: [
+                { label: '日常', value: '日常' },
+                { label: '必要开支', value: '必要开支' },
+                { label: '许愿池', value: '许愿池' }
+              ],
+              showWhen: (v) => !!v.syncTopupToLedger && v.ledgerRole !== 'dengbao'
+            }
+          ],
+          onSubmit: (vals, showError) => {
+            const paid = String(vals.paid ?? '').trim() === '' ? 0 : evalMathAmount(vals.paid);
+            if (isNaN(paid) || paid < 0) {
+              showError('实付价格请填写非负数字');
+              return false;
+            }
+            let addVal = 0;
+            if (card.cardType === 'stored') {
+              const rawAdd = String(vals.addVal ?? '').trim();
+              addVal = rawAdd === '' ? paid : evalMathAmount(rawAdd);
+              if (isNaN(addVal) || addVal < 0) {
+                showError('新增到账面额请填写非负数字');
+                return false;
+              }
+            } else if (card.cardType === 'times') {
+              const rawAdd = String(vals.addVal ?? '').trim();
+              addVal = rawAdd === '' ? 0 : evalMathAmount(rawAdd);
+              if (isNaN(addVal) || addVal < 0) {
+                showError('新增次数请填写非负数字');
+                return false;
+              }
+            }
 
-        const suggestedExp = card.expiryDate
-          ? addMonthsToDateStr(card.expiryDate > getTodayStr() ? card.expiryDate : getTodayStr(), 12)
-          : '';
-        const newExp = prompt(
-          `设置更新后的保质期/有效期至（格式 YYYY-MM-DD，清空表示长期有效）：`,
-          suggestedExp
-        );
-        if (newExp !== null) {
-          card.expiryDate = newExp.trim();
-        }
+            const nowIso = new Date().toISOString();
+            const todayStr = getTodayStr();
+            card.expiryDate = String(vals.expiryDate ?? '').trim();
+            card.price = Engine.round2((Number(card.price) || 0) + paid);
+            if (card.cardType !== 'period' && addVal > 0) {
+              card.totalValue = Engine.round2((Number(card.totalValue) || 0) + addVal);
+              card.remainingValue = Engine.round2((Number(card.remainingValue) || 0) + addVal);
+            }
+            const syncedNow = !!(vals.syncTopupToLedger && paid > 0);
+            if (syncedNow) {
+              card.recordedInLedger = true;
+            }
+            card.archived = false;
+            card.updatedAt = nowIso;
+            card.logs = Array.isArray(card.logs) ? card.logs : [];
+            card.logs.push({
+              id: 'clog_' + Date.now(),
+              date: todayStr,
+              action: '续充延期',
+              delta: card.cardType === 'period' ? null : Engine.round2(addVal),
+              paidPrice: Engine.round2(paid),
+              afterRemaining: card.cardType === 'period' ? null : card.remainingValue,
+              note: `续充实付 ¥${fm(paid, false)}${card.expiryDate ? ' · 有效期至 ' + card.expiryDate : ' · 长期有效'}${syncedNow ? ' · 已同步记入账单' : ''}`
+            });
 
-        card.price = Engine.round2((Number(card.price) || 0) + paid);
-        if (card.cardType !== 'period' && addVal > 0) {
-          card.totalValue = Engine.round2((Number(card.totalValue) || 0) + addVal);
-          card.remainingValue = Engine.round2((Number(card.remainingValue) || 0) + addVal);
-        }
-        card.archived = false;
-        card.updatedAt = new Date().toISOString();
-        card.logs = Array.isArray(card.logs) ? card.logs : [];
-        card.logs.push({
-          id: 'clog_' + Date.now(),
-          date: getTodayStr(),
-          action: '续充延期',
-          delta: card.cardType === 'period' ? null : Engine.round2(addVal),
-          paidPrice: Engine.round2(paid),
-          afterRemaining: card.cardType === 'period' ? null : card.remainingValue,
-          note: `续充实付 ¥${Engine.round2(paid)}${card.expiryDate ? ' · 有效期至 ' + card.expiryDate : ''}`
+            if (syncedNow) {
+              const curPref = localStorage.getItem(PREF_ROLE_KEY) === 'q' ? 'q' : 'c';
+              const expText = card.expiryDate ? `有效期至${card.expiryDate}` : '长期有效';
+              if (vals.ledgerRole === 'dengbao') {
+                state.data.transactions.dengbao.push({
+                  id: 'tx_' + Date.now(),
+                  date: todayStr,
+                  amount: Engine.round2(paid),
+                  payer: curPref,
+                  type: '支出',
+                  category: '孩子用品',
+                  note: `[续卡] ${card.name} (${expText})`,
+                  updatedAt: nowIso
+                });
+              } else {
+                const role = vals.ledgerRole === 'q' ? 'q' : 'c';
+                state.data.transactions[role].push({
+                  id: 'tx_' + Date.now(),
+                  date: todayStr,
+                  amount: Engine.round2(paid),
+                  type: '支出',
+                  purpose: vals.ledgerPurpose || '日常',
+                  category: '订阅会员',
+                  note: `[续卡] ${card.name} (${expText})`,
+                  updatedAt: nowIso
+                });
+              }
+            }
+
+            saveData();
+            render();
+            showToast('💳 已完成续充与保质期更新！');
+          }
         });
-        saveData();
-        render();
-        showToast('💳 已完成续充与保质期更新！');
       };
     });
 
@@ -3143,6 +4494,8 @@
         const id = btn.dataset.cardEdit;
         const card = (state.data.memberCards || []).find((x) => x.id === id);
         if (!card) return;
+        const autoDetected =
+          Array.isArray(card.logs) && card.logs.some((lg) => lg && String(lg.note || '').includes('已同步记入账单'));
         state.cardForm = {
           open: true,
           editingId: card.id,
@@ -3155,6 +4508,7 @@
           openDate: card.openDate || getTodayStr(),
           expiryDate: card.expiryDate || '',
           note: card.note || '',
+          recordedInLedger: !!(card.recordedInLedger || autoDetected),
           syncToLedger: false,
           ledgerRole: 'c',
           ledgerPurpose: '日常'
@@ -3196,7 +4550,7 @@
       btn.onclick = () => {
         const cr = report.memberCardsReport;
         const rows = [
-          ['卡片名称', '卡类型', '归属人', '实付价格(元)', '总额度/总次数', '当前剩余', '充卡日期', '保质期/有效期至', '状态', '备注说明']
+          ['卡片名称', '卡类型', '归属人', '实付价格(元)', '总额度/总次数', '当前剩余', '充卡日期', '保质期/有效期至', '账单联动', '状态', '备注说明']
         ];
         const ownerMap = { family: '家庭共用', c: 'c', q: 'q', dengbao: '噔宝' };
         const typeMap = { stored: '储值余额卡', times: '计次卡', period: '期限会员卡' };
@@ -3210,6 +4564,7 @@
             c.cardType === 'period' ? '--' : c.remainingValue,
             c.openDate || '',
             c.expiryDate || '长期有效',
+            c.ledgerBadgeText || '未记账单',
             c.isDepleted ? '已用完' : c.expiryBadgeText,
             c.note || ''
           ]);

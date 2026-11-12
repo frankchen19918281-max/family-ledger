@@ -9,7 +9,7 @@
   <meta name="theme-color" content="#0f766e" />
   <link rel="manifest" href="./manifest.json" />
   <title>2026-2027 家庭共同记账</title>
-  <link rel="stylesheet" href="./styles.css" />
+  <link rel="stylesheet" href="./styles.css?v=20261112.1418" />
 </head>
 <body>
   <div class="app-shell">
@@ -68,6 +68,12 @@
     </nav>
   </div>
 
+  <!-- 底部抽屉交互面板 (Bottom Sheet) -->
+  <div class="sheet-overlay hidden" id="bottomSheetOverlay">
+    <div class="sheet-backdrop" id="bottomSheetBackdrop"></div>
+    <div class="sheet-panel" id="bottomSheetPanel" role="dialog" aria-modal="true"></div>
+  </div>
+
   <div class="toast" id="toastEl"></div>
 
   <!-- 夫妻私密安全锁屏 -->
@@ -81,7 +87,7 @@
     </div>
   </div>
 
-  <script src="../shared/engine.js"></script>
-  <script src="./app.js"></script>
+  <script src="../shared/engine.js?v=20261112.1418"></script>
+  <script src="./app.js?v=20261112.1418"></script>
 </body>
 </html>

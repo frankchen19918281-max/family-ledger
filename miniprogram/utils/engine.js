@@ -341,15 +341,126 @@
   }
 
   /**
-   * 计算必要开支与许愿池预算指标
+   * 匹配单笔 c/q 流水所属的预算子项（支持显式 budgetItemId，并对未绑定的历史流水做无歧义智能归类）
    */
-  function computeBudgets(data) {
-    const result = { c: {}, q: {}, dengbao: {} };
+  function resolveTxBudgetItem(tx, purpose, items) {
+    if (!tx || tx.purpose !== purpose || (tx.type !== '支出' && tx.type !== '退款')) {
+      return null;
+    }
+    const list = items || [];
+    if (tx.budgetItemId !== undefined && tx.budgetItemId !== null) {
+      if (tx.budgetItemId === '') return null; // 用户明确选择“不指定子项”
+      const byId = list.find((it) => it.id === tx.budgetItemId);
+      if (byId) return { item: byId, auto: false };
+    }
+    if (tx.budgetItemName) {
+      const byName = list.find((it) => it.name === tx.budgetItemName);
+      if (byName) return { item: byName, auto: false };
+    }
+
+    // 兼容旧流水：当未设置 budgetItemId 时，按同名分类/备注或唯一类目映射自动匹配
+    const eligible = list.filter((it) => it.name && it.name !== '噔宝' && !(isNum(Number(it.annualBudget)) && Number(it.annualBudget) < 0));
+    const cat = (tx.category || '').trim();
+    const note = (tx.note || '').trim();
+
+    if (cat) {
+      const exactCat = eligible.find((it) => it.name === cat);
+      if (exactCat) return { item: exactCat, auto: true };
+    }
+    if (note) {
+      const noteMatches = eligible.filter((it) => it.name.length >= 2 && note.includes(it.name));
+      if (noteMatches.length === 1) return { item: noteMatches[0], auto: true };
+    }
+    if (purpose === '必要开支') {
+      if (cat === '服饰鞋包') {
+        const clothMatches = eligible.filter((it) => it.name === '服装' || it.name === '服装费');
+        if (clothMatches.length === 1) return { item: clothMatches[0], auto: true };
+      } else if (cat === '汽车费用') {
+        const carMatches = eligible.filter((it) => it.name.includes('汽车') || it.name === '养车');
+        if (carMatches.length === 1) return { item: carMatches[0], auto: true };
+      } else if (cat === '日用品') {
+        const homeMatches = eligible.filter((it) => it.name === '家庭杂物开支' || it.name === '日用品');
+        if (homeMatches.length === 1) return { item: homeMatches[0], auto: true };
+      }
+    } else if (purpose === '许愿池') {
+      if (cat === '旅游出游') {
+        const travelMatches = eligible.filter((it) => it.name.includes('游') || it.name.includes('旅'));
+        if (travelMatches.length === 1) return { item: travelMatches[0], auto: true };
+      }
+    }
+    return null;
+  }
+
+  /**
+   * 计算必要开支与许愿池预算指标（含预算年度内各子项已花、剩余与进度条状态）
+   */
+  function computeBudgets(data, targetPeriodKey) {
+    const activePKey = targetPeriodKey || (data.settings && data.settings.currentPeriod) || getCurrentPeriodInfo().periodKey || '2026-10';
+    const pRange = getPeriodRange(activePKey);
+    const budgetYear = pRange.year || Number(data.settings && data.settings.budgetYear) || 2026;
+    const yearRange = getBudgetYearRange(budgetYear);
+    const threshold = Number(data.settings && data.settings.warningThreshold) || 0.8;
+
+    const result = { budgetYear, yearRange, c: {}, q: {}, dengbao: {} };
     ['c', 'q'].forEach((member) => {
-      const necItems = (data.necessaryBudgets[member] || []).map((item) => {
+      const rawNecList = data.necessaryBudgets[member] || [];
+      const rawWishList = data.wishBudgets[member] || [];
+      const yearTxs = filterTxInRange((data.transactions && data.transactions[member]) || [], yearRange.startDate, yearRange.nextStartDate);
+      const dbYearTxs = filterTxInRange((data.transactions && data.transactions.dengbao) || [], yearRange.startDate, yearRange.nextStartDate).filter(
+        (t) => t.payer === member
+      );
+      const dbYearPaid =
+        dbYearTxs.filter((t) => t.type === '支出').reduce((acc, t) => acc + (Number(t.amount) || 0), 0) -
+        dbYearTxs.filter((t) => t.type === '退款').reduce((acc, t) => acc + (Number(t.amount) || 0), 0);
+
+      const necSpentMap = {};
+      let necUnassignedSpent = 0;
+      const wishSpentMap = {};
+      let wishUnassignedSpent = 0;
+
+      yearTxs.forEach((tx) => {
+        if (tx.type !== '支出' && tx.type !== '退款') return;
+        const delta = tx.type === '支出' ? (Number(tx.amount) || 0) : -(Number(tx.amount) || 0);
+        if (tx.purpose === '必要开支') {
+          const matched = resolveTxBudgetItem(tx, '必要开支', rawNecList);
+          if (matched && matched.item) {
+            necSpentMap[matched.item.id] = (necSpentMap[matched.item.id] || 0) + delta;
+          } else {
+            necUnassignedSpent += delta;
+          }
+        } else if (tx.purpose === '许愿池') {
+          const matched = resolveTxBudgetItem(tx, '许愿池', rawWishList);
+          if (matched && matched.item) {
+            wishSpentMap[matched.item.id] = (wishSpentMap[matched.item.id] || 0) + delta;
+          } else {
+            wishUnassignedSpent += delta;
+          }
+        }
+      });
+
+      let dengbaoAssigned = false;
+      const necItems = rawNecList.map((item) => {
         const hasBudget = item.annualBudget !== null && item.annualBudget !== '' && !isNaN(Number(item.annualBudget));
         const budgetNum = hasBudget ? Number(item.annualBudget) : null;
         const monthly = (item.name && hasBudget) ? budgetNum / 12 : null;
+        const isOffset = isNum(budgetNum) && budgetNum < 0;
+        let spent = necSpentMap[item.id] || 0;
+        if (item.name === '噔宝' && !dengbaoAssigned) {
+          spent += dbYearPaid;
+          dengbaoAssigned = true;
+        }
+        spent = round2(spent);
+        const remaining = !isOffset && isNum(budgetNum) ? round2(budgetNum - spent) : null;
+        const ratio = !isOffset && isNum(budgetNum) && budgetNum > 0
+          ? Math.max(0, spent / budgetNum)
+          : (!isOffset && spent > 0 ? 1 : 0);
+
+        let level = 'ok';
+        if (isOffset) level = 'info';
+        else if (!hasBudget) level = spent > 0 ? 'warn' : 'info';
+        else if (spent > budgetNum || (budgetNum > 0 && spent === budgetNum)) level = 'danger';
+        else if (budgetNum > 0 && spent >= budgetNum * threshold) level = 'warn';
+
         let tip = '';
         if (!item.name && !hasBudget) tip = '';
         else if (!item.name) tip = '请填项目';
@@ -358,6 +469,11 @@
           ...item,
           annualBudget: budgetNum,
           monthly,
+          isOffset,
+          spent,
+          remaining,
+          ratio,
+          level,
           tip
         };
       });
@@ -370,12 +486,23 @@
         .filter((it) => it.name === '噔宝' && isNum(it.monthly))
         .reduce((acc, it) => acc + it.monthly, 0);
 
-      const wishItems = (data.wishBudgets[member] || []).map((item) => {
+      const wishItems = rawWishList.map((item) => {
         const hasQuota = item.annualQuota !== null && item.annualQuota !== '' && !isNaN(Number(item.annualQuota));
         const quotaNum = hasQuota ? Number(item.annualQuota) : null;
         const monthsNum = item.months !== null && item.months !== '' && !isNaN(Number(item.months)) ? Number(item.months) : 12;
         const validMonths = monthsNum >= 1 && monthsNum % 1 === 0;
         const monthly = (item.name && hasQuota && quotaNum >= 0 && validMonths) ? quotaNum / monthsNum : null;
+        const spent = round2(wishSpentMap[item.id] || 0);
+        const remaining = isNum(quotaNum) && quotaNum >= 0 ? round2(quotaNum - spent) : null;
+        const ratio = isNum(quotaNum) && quotaNum > 0
+          ? Math.max(0, spent / quotaNum)
+          : (spent > 0 ? 1 : 0);
+
+        let level = 'ok';
+        if (!hasQuota) level = spent > 0 ? 'warn' : 'info';
+        else if (spent > quotaNum || (quotaNum > 0 && spent === quotaNum)) level = 'danger';
+        else if (quotaNum > 0 && spent >= quotaNum * threshold) level = 'warn';
+
         let tip = '';
         if (!item.name && !hasQuota) tip = '';
         else if (!item.name) tip = '请填项目';
@@ -386,6 +513,10 @@
           annualQuota: quotaNum,
           months: monthsNum,
           monthly,
+          spent,
+          remaining,
+          ratio,
+          level,
           tip
         };
       });
@@ -396,10 +527,12 @@
         necessaryItems: necItems,
         necessaryMonthly: necMonthlyTotal,
         necessaryAnnualQuota: necAnnualQuota,
+        necUnassignedSpent: round2(necUnassignedSpent),
         dengbaoMonthlyReserve,
         wishItems,
         wishMonthly: wishMonthlyTotal,
-        wishAnnualQuota
+        wishAnnualQuota,
+        wishUnassignedSpent: round2(wishUnassignedSpent)
       };
     });
 
@@ -869,8 +1002,18 @@
       let afterQuota = null;
       let budgetAlert = '';
       let alertLevel = 'ok';
+      let resolvedBudgetItemId = '';
+      let resolvedBudgetItemName = '';
+      let isAutoBudgetItem = false;
 
       if ((tx.type === '支出' || tx.type === '退款') && (tx.purpose === '必要开支' || tx.purpose === '许愿池')) {
+        const bList = tx.purpose === '必要开支' ? (data.necessaryBudgets[member] || []) : (data.wishBudgets[member] || []);
+        const matched = resolveTxBudgetItem(tx, tx.purpose, bList);
+        if (matched && matched.item) {
+          resolvedBudgetItemId = matched.item.id;
+          resolvedBudgetItemName = matched.item.name;
+          isAutoBudgetItem = !!matched.auto;
+        }
         if (!inBudgetYear) {
           budgetAlert = '非本清单年度';
           alertLevel = 'info';
@@ -914,7 +1057,10 @@
         runningWish,
         afterQuota,
         budgetAlert,
-        alertLevel
+        alertLevel,
+        resolvedBudgetItemId,
+        resolvedBudgetItemName,
+        isAutoBudgetItem
       };
     });
   }
@@ -1076,6 +1222,14 @@
     const tToday = new Date(todayStr + 'T00:00:00').getTime();
     const rawCards = Array.isArray(data.memberCards) ? data.memberCards : [];
 
+    const allTxNotes = data && data.transactions
+      ? [
+          ...(data.transactions.c || []),
+          ...(data.transactions.q || []),
+          ...(data.transactions.dengbao || [])
+        ].map((t) => String((t && t.note) || ''))
+      : [];
+
     const cards = rawCards.map((c) => {
       const cardType = c.cardType || 'stored'; // stored | times | period
       const owner = c.owner || 'family'; // family | c | q | dengbao
@@ -1087,6 +1241,11 @@
       const expiryDate = c.expiryDate ? String(c.expiryDate).trim() : '';
       const openDate = c.openDate ? String(c.openDate).trim() : '';
       const archived = !!c.archived;
+      const autoDetectedInLedger =
+        (Array.isArray(c.logs) && c.logs.some((lg) => lg && String(lg.note || '').includes('已同步记入账单'))) ||
+        (c.name && allTxNotes.some((n) => n.includes(`[办卡] ${c.name}`)));
+      const recordedInLedger = c.recordedInLedger !== undefined ? !!c.recordedInLedger : !!autoDetectedInLedger;
+      const ledgerBadgeText = recordedInLedger ? '已入账单' : '未记账单';
 
       let daysLeft = null;
       if (expiryDate && /^\d{4}-\d{2}-\d{2}$/.test(expiryDate)) {
@@ -1154,6 +1313,8 @@
         openDate,
         expiryDate,
         archived,
+        recordedInLedger,
+        ledgerBadgeText,
         daysLeft,
         isExpired,
         isExpiringSoon,
@@ -1201,18 +1362,125 @@
   }
 
   /**
+   * 计算「家庭金蛋与心愿金库」累计成就数据（历史累计攒钱 + 当年攒金蛋进度 + 许愿池可用池子余额）
+   */
+  function computeTreasurySummary(data, budgets, allocationsChain, activePeriod) {
+    const cAll = summarizeMemberRange(data, 'c', '0000-01-01', '9999-12-31');
+    const qAll = summarizeMemberRange(data, 'q', '0000-01-01', '9999-12-31');
+
+    const pKey = activePeriod || getCurrentPeriodInfo().periodKey || '2026-10';
+    const budgetYear = getPeriodRange(pKey).year || 2026;
+    const yearRange = getBudgetYearRange(budgetYear);
+    const cYear = summarizeMemberRange(data, 'c', yearRange.startDate, yearRange.nextStartDate);
+    const qYear = summarizeMemberRange(data, 'q', yearRange.startDate, yearRange.nextStartDate);
+
+    // 统计所有已录入工资账期的应存金蛋与许愿池月度累计预留
+    const accruedGolden = { c: 0, q: 0 };
+    const accruedWish = { c: 0, q: 0 };
+    const salaryPeriods = { c: 0, q: 0 };
+
+    Object.keys(allocationsChain || {}).forEach((k) => {
+      const p = allocationsChain[k];
+      if (!p) return;
+      ['c', 'q'].forEach((m) => {
+        if (p[m] && isNum(p[m].salary)) {
+          accruedGolden[m] += Number(p[m].goldenEggTotal) || 0;
+          accruedWish[m] += Number(p[m].wishMonthly) || 0;
+          salaryPeriods[m] += 1;
+        }
+      });
+    });
+
+    const defFixed = (data.settings && data.settings.defaultFixedGoldenEgg) || { c: 2000, q: 2000 };
+    const annualBaseTarget = round2(((Number(defFixed.c) || 2000) + (Number(defFixed.q) || 2000)) * 12);
+
+    const cGoldDep = round2(cAll.goldenEggNetDeposit);
+    const qGoldDep = round2(qAll.goldenEggNetDeposit);
+    const totalGoldDep = round2(cGoldDep + qGoldDep);
+    const yearGoldDep = round2(cYear.goldenEggNetDeposit + qYear.goldenEggNetDeposit);
+    const totalGoldAccrued = round2(accruedGolden.c + accruedGolden.q);
+    const goldStillNeedAll = round2(Math.max(0, totalGoldAccrued - totalGoldDep));
+    const yearGoldPct = annualBaseTarget > 0 ? round2(Math.min(100, Math.max(0, (yearGoldDep / annualBaseTarget) * 100))) : 0;
+
+    // 许愿池：支持「显式存入许愿池流水」与「发薪账期自动月均预留」双口径展示
+    const cWishDep = round2(cAll.wishNetDeposit);
+    const qWishDep = round2(qAll.wishNetDeposit);
+    const totalWishDep = round2(cWishDep + qWishDep);
+    const cWishAccrued = round2(accruedWish.c);
+    const qWishAccrued = round2(accruedWish.q);
+    const totalWishAccrued = round2(cWishAccrued + qWishAccrued);
+    const cWishSpent = round2(cAll.wishNetSpent);
+    const qWishSpent = round2(qAll.wishNetSpent);
+    const totalWishSpent = round2(cWishSpent + qWishSpent);
+
+    const hasExplicitWishDeposit = totalWishDep > 0;
+    const cPoolIn = cWishDep > 0 ? cWishDep : cWishAccrued;
+    const qPoolIn = qWishDep > 0 ? qWishDep : qWishAccrued;
+    const cWishAvailable = round2(cPoolIn - cWishSpent);
+    const qWishAvailable = round2(qPoolIn - qWishSpent);
+    const wishDepositBalance = round2(totalWishDep - totalWishSpent);
+    const wishReserveBalance = round2(totalWishAccrued - totalWishSpent);
+    const wishAvailableBalance = hasExplicitWishDeposit ? wishDepositBalance : wishReserveBalance;
+
+    const cOtherDep = round2(cAll.otherSavingsNetDeposit);
+    const qOtherDep = round2(qAll.otherSavingsNetDeposit);
+    const totalOtherDep = round2(cOtherDep + qOtherDep);
+
+    return {
+      budgetYear,
+      goldenEgg: {
+        cDeposit: cGoldDep,
+        qDeposit: qGoldDep,
+        totalDeposit: totalGoldDep,
+        yearDeposit: yearGoldDep,
+        annualBaseTarget,
+        yearProgressPct: yearGoldPct,
+        cAccruedTarget: round2(accruedGolden.c),
+        qAccruedTarget: round2(accruedGolden.q),
+        totalAccruedTarget: totalGoldAccrued,
+        pendingCheckin: goldStillNeedAll
+      },
+      wishPool: {
+        hasExplicitDeposit: hasExplicitWishDeposit,
+        cDeposit: cWishDep,
+        qDeposit: qWishDep,
+        totalDeposit: totalWishDep,
+        cAccrued: cWishAccrued,
+        qAccrued: qWishAccrued,
+        totalAccrued: totalWishAccrued,
+        cSpent: cWishSpent,
+        qSpent: qWishSpent,
+        totalSpent: totalWishSpent,
+        cAvailable: cWishAvailable,
+        qAvailable: qWishAvailable,
+        depositBalance: wishDepositBalance,
+        reserveBalance: wishReserveBalance,
+        availableBalance: wishAvailableBalance
+      },
+      otherSavings: {
+        cDeposit: cOtherDep,
+        qDeposit: qOtherDep,
+        totalDeposit: totalOtherDep
+      },
+      salaryPeriods,
+      totalNetDeposit: round2(totalGoldDep + totalWishDep + totalOtherDep)
+    };
+  }
+
+  /**
    * 一站式计算全量视图模型
    */
   function computeFullReport(data, selectedPeriodKey) {
     const autoPeriodKey = getCurrentPeriodInfo().periodKey;
     const activePeriod = selectedPeriodKey || autoPeriodKey || data.settings.currentPeriod || '2026-10';
-    const budgets = computeBudgets(data);
+    const budgets = computeBudgets(data, activePeriod);
     const allocationsChain = computeAllocationsChain(data, budgets, activePeriod);
     const currentAllocation = allocationsChain[activePeriod];
     const annualTracking = computeAnnualTracking(data, budgets, activePeriod);
     const annualSummary = computeAnnualSummary(data, activePeriod);
     const dengbaoReport = computeDengbaoReport(data, budgets, activePeriod);
     const memberCardsReport = computeMemberCardsReport(data);
+    const treasurySummary = computeTreasurySummary(data, budgets, allocationsChain, activePeriod);
     const cEnrichedTxs = enrichMemberTransactions(data, budgets, 'c', activePeriod);
     const qEnrichedTxs = enrichMemberTransactions(data, budgets, 'q', activePeriod);
     const dbEnrichedTxs = (data.transactions.dengbao || []).map((t, i) => ({
@@ -1239,6 +1507,7 @@
       annualSummary,
       dengbaoReport,
       memberCardsReport,
+      treasurySummary,
       transactions: {
         c: cEnrichedTxs,
         q: qEnrichedTxs,
@@ -1260,12 +1529,14 @@
     getYearPeriods,
     validateMemberTx,
     validateDengbaoTx,
+    resolveTxBudgetItem,
     computeBudgets,
     computeAllocationsChain,
     computeAnnualTracking,
     computeAnnualSummary,
     computeDengbaoReport,
     computeMemberCardsReport,
+    computeTreasurySummary,
     enrichMemberTransactions,
     computeFullReport
   };

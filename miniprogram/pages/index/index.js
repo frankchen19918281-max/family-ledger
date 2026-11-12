@@ -33,6 +33,7 @@ Page({
       amount: '',
       type: '支出',
       purpose: '日常',
+      budgetItemId: '',
       payer: 'q',
       category: '餐饮外卖',
       note: '',
@@ -41,6 +42,7 @@ Page({
     },
     typeOptions: ['支出', '收入', '退款', '存入', '取出'],
     purposeOptions: ['日常', '必要开支', '许愿池'],
+    budgetItemOptions: [],
     categoryOptions: [],
 
     // 流水筛选
@@ -51,7 +53,7 @@ Page({
       chartDim: 'category'
     },
     filteredLedger: [],
-    expenseChart: { totalText: '0.00', items: [], gradient: '' },
+    expenseChart: { totalText: '0', items: [], gradient: '' },
 
     // 会员储值卡表单与列表
     cardFormOpen: false,
@@ -63,6 +65,7 @@ Page({
       totalValue: '',
       openDate: Engine.getTodayDateStr(),
       expiryDate: addMonthsStr(Engine.getTodayDateStr(), 12),
+      recordedInLedger: false,
       note: ''
     },
     memberCards: [],
@@ -140,44 +143,55 @@ Page({
     const alloc = r.currentAllocation;
     const track = r.annualTracking;
     const db = r.dengbaoReport;
+    const tr = r.treasurySummary;
 
     const view = {
       periodLabel: r.periodRange.label,
       startDate: r.periodRange.startDate,
       endDate: r.periodRange.endDate,
-      familyPocket: fm(alloc.family.remainingPocket),
-      cPocket: fm(alloc.c.remainingPocket),
-      qPocket: fm(alloc.q.remainingPocket),
-      cDaily: fm(alloc.c.dailyAllowance),
-      qDaily: fm(alloc.q.dailyAllowance),
+      familyPocket: fm(alloc.family.remainingPocket, false),
+      cPocket: fm(alloc.c.remainingPocket, false),
+      qPocket: fm(alloc.q.remainingPocket, false),
+      cDaily: fm(alloc.c.dailyAllowance, false),
+      qDaily: fm(alloc.q.dailyAllowance, false),
       cDailySpent: fm(alloc.c.dailyNetSpent, false),
       qDailySpent: fm(alloc.q.dailyNetSpent, false),
-      cPrevBal: fm(alloc.c.prevBalance),
-      qPrevBal: fm(alloc.q.prevBalance),
+      famDailySpent: fm(alloc.family.dailyNetSpent, false),
+      cPrevBal: fm(alloc.c.prevBalance, false),
+      qPrevBal: fm(alloc.q.prevBalance, false),
+
+      // 家庭金蛋与心愿金库
+      goldenTotal: fm(tr.goldenEgg.totalDeposit, false),
+      goldenC: fm(tr.goldenEgg.cDeposit, false),
+      goldenQ: fm(tr.goldenEgg.qDeposit, false),
+      goldenPct: Math.round(tr.goldenEgg.yearProgressPct || 0),
+      wishPoolBal: fm(tr.wishPool.availableBalance, false),
+      wishPoolLabel: tr.wishPool.hasExplicitDeposit ? '许愿池专户余' : '许愿池预留余',
+      wishYearSpent: fm(tr.wishPool.totalSpent, false),
 
       // 分配表
-      cSalary: fm(alloc.c.salary),
-      qSalary: fm(alloc.q.salary),
-      famSalary: fm(alloc.family.salary),
-      cNecMon: fm(alloc.c.necessaryMonthly),
-      qNecMon: fm(alloc.q.necessaryMonthly),
-      famNecMon: fm(alloc.family.necessaryMonthly),
-      cGoldFixed: fm(alloc.c.fixedGoldenEgg),
-      qGoldFixed: fm(alloc.q.fixedGoldenEgg),
-      famGoldFixed: fm(alloc.family.fixedGoldenEgg),
-      cGoldSup: fm(alloc.c.goldenEggSupplement),
-      qGoldSup: fm(alloc.q.goldenEggSupplement),
-      famGoldSup: fm(alloc.family.goldenEggSupplement),
-      cGoldTotal: fm(alloc.c.goldenEggTotal),
-      qGoldTotal: fm(alloc.q.goldenEggTotal),
-      famGoldTotal: fm(alloc.family.goldenEggTotal),
-      cWishMon: fm(alloc.c.wishMonthly),
-      qWishMon: fm(alloc.q.wishMonthly),
-      famWishMon: fm(alloc.family.wishMonthly),
-      famDaily: fm(alloc.family.dailyAllowance),
-      cExtraTrans: fm(alloc.c.extraTransfer),
-      qExtraTrans: fm(alloc.q.extraTransfer),
-      famExtraTrans: fm(alloc.family.extraTransfer),
+      cSalary: fm(alloc.c.salary, false),
+      qSalary: fm(alloc.q.salary, false),
+      famSalary: fm(alloc.family.salary, false),
+      cNecMon: fm(alloc.c.necessaryMonthly, false),
+      qNecMon: fm(alloc.q.necessaryMonthly, false),
+      famNecMon: fm(alloc.family.necessaryMonthly, false),
+      cGoldFixed: fm(alloc.c.fixedGoldenEgg, false),
+      qGoldFixed: fm(alloc.q.fixedGoldenEgg, false),
+      famGoldFixed: fm(alloc.family.fixedGoldenEgg, false),
+      cGoldSup: fm(alloc.c.goldenEggSupplement, false),
+      qGoldSup: fm(alloc.q.goldenEggSupplement, false),
+      famGoldSup: fm(alloc.family.goldenEggSupplement, false),
+      cGoldTotal: fm(alloc.c.goldenEggTotal, false),
+      qGoldTotal: fm(alloc.q.goldenEggTotal, false),
+      famGoldTotal: fm(alloc.family.goldenEggTotal, false),
+      cWishMon: fm(alloc.c.wishMonthly, false),
+      qWishMon: fm(alloc.q.wishMonthly, false),
+      famWishMon: fm(alloc.family.wishMonthly, false),
+      famDaily: fm(alloc.family.dailyAllowance, false),
+      cExtraTrans: fm(alloc.c.extraTransfer, false),
+      qExtraTrans: fm(alloc.q.extraTransfer, false),
+      famExtraTrans: fm(alloc.family.extraTransfer, false),
 
       // 本期消费
       cNecSpent: fm(alloc.c.necessaryNetSpent, false),
@@ -224,16 +238,22 @@ Page({
       dbQPaid: fm(db.current.qPaid, false),
       dbStatus: db.current.status,
 
-      // 预算清单
+      // 预算清单（含每项已花/剩余进度）
       necessaryList: r.budgets[this.data.budgetRole].necessaryItems.map((it) => ({
         ...it,
         annualBudgetText: it.annualBudget !== null ? fm(it.annualBudget, false) : '未设',
-        monthlyText: it.monthly !== null ? fm(it.monthly) : '--'
+        monthlyText: it.monthly !== null ? fm(it.monthly, false) : '--',
+        spentText: fm(it.spent || 0, false),
+        remText: it.remaining !== null ? fm(it.remaining, false) : '--',
+        pct: Math.min(100, Math.round((it.ratio || 0) * 100))
       })),
       wishList: r.budgets[this.data.budgetRole].wishItems.map((it) => ({
         ...it,
         annualQuotaText: it.annualQuota !== null ? fm(it.annualQuota, false) : '未设',
-        monthlyText: it.monthly !== null ? fm(it.monthly) : '--'
+        monthlyText: it.monthly !== null ? fm(it.monthly, false) : '--',
+        spentText: fm(it.spent || 0, false),
+        remText: it.remaining !== null ? fm(it.remaining, false) : '--',
+        pct: Math.min(100, Math.round((it.ratio || 0) * 100))
       }))
     };
 
@@ -266,6 +286,17 @@ Page({
     const typeOptions = isDb ? ['支出', '退款'] : ['支出', '收入', '退款', '存入', '取出'];
     const purposeOptions = this.getPurposeListByType(f.type);
     const categoryOptions = isDb ? rawData.dengbaoCategories : rawData.categories;
+    const needBudgetItem =
+      !isDb && (f.type === '支出' || f.type === '退款') && (f.purpose === '必要开支' || f.purpose === '许愿池');
+    const budgetItemOptions = needBudgetItem
+      ? (f.purpose === '必要开支' ? r.budgets[f.role].necessaryItems : r.budgets[f.role].wishItems)
+          .filter((it) => it.name && it.name !== '噔宝' && !it.isOffset)
+          .map((it) => ({
+            id: it.id,
+            name: it.name,
+            remText: it.remaining !== null ? fm(it.remaining, false) : null
+          }))
+      : [];
 
     // 整理会员储值卡数据
     const cr = r.memberCardsReport;
@@ -287,6 +318,7 @@ Page({
       expenseChart: this.buildExpenseChart(filteredLedger, lf.chartDim || 'category'),
       typeOptions,
       purposeOptions,
+      budgetItemOptions,
       categoryOptions,
       memberCards,
       cardsSummary: {
@@ -395,6 +427,7 @@ Page({
     this.setData({
       'addForm.role': role,
       'addForm.type': '支出',
+      'addForm.budgetItemId': '',
       'addForm.category': cat
     });
     this.refreshReport();
@@ -405,13 +438,22 @@ Page({
     const purposes = this.getPurposeListByType(type);
     this.setData({
       'addForm.type': type,
-      'addForm.purpose': purposes[0]
+      'addForm.purpose': purposes[0],
+      'addForm.budgetItemId': ''
     });
     this.refreshReport();
   },
 
   selectAddPurpose(e) {
-    this.setData({ 'addForm.purpose': e.currentTarget.dataset.purpose });
+    this.setData({
+      'addForm.purpose': e.currentTarget.dataset.purpose,
+      'addForm.budgetItemId': ''
+    });
+    this.refreshReport();
+  },
+
+  selectAddBudgetItem(e) {
+    this.setData({ 'addForm.budgetItemId': e.currentTarget.dataset.bitem || '' });
   },
 
   selectAddPayer(e) {
@@ -462,16 +504,18 @@ Page({
 
     const rawData = app.globalData.ledgerData;
     const newId = f.editingId || 'tx_' + Date.now();
+    const nowIso = new Date().toISOString();
 
     if (f.role === 'dengbao') {
       const item = {
         id: newId,
         date: f.date,
-        amount: numAmt,
+        amount: Engine.round2(numAmt),
         payer: f.payer || 'q',
         type: f.type,
         category: f.category || '孩子用品',
-        note: f.note || ''
+        note: f.note || '',
+        updatedAt: nowIso
       };
       const err = Engine.validateDengbaoTx(item);
       if (err) {
@@ -483,12 +527,24 @@ Page({
       const item = {
         id: newId,
         date: f.date,
-        amount: numAmt,
+        amount: Engine.round2(numAmt),
         type: f.type,
         purpose: f.purpose,
         category: f.category || '',
-        note: f.note || ''
+        note: f.note || '',
+        updatedAt: nowIso
       };
+      if (
+        (f.type === '支出' || f.type === '退款') &&
+        (f.purpose === '必要开支' || f.purpose === '许愿池') &&
+        f.budgetItemId
+      ) {
+        const srcList =
+          f.purpose === '必要开支' ? rawData.necessaryBudgets[f.role] || [] : rawData.wishBudgets[f.role] || [];
+        const subObj = srcList.find((x) => x.id === f.budgetItemId);
+        item.budgetItemId = f.budgetItemId;
+        if (subObj) item.budgetItemName = subObj.name;
+      }
       const err = Engine.validateMemberTx(item);
       if (err) {
         wx.showToast({ title: err, icon: 'none' });
@@ -506,6 +562,7 @@ Page({
       activePeriod: pInfo.periodKey,
       'addForm.amount': '',
       'addForm.note': '',
+      'addForm.budgetItemId': '',
       currentTab: 'dashboard'
     });
     this.refreshReport();
@@ -536,6 +593,8 @@ Page({
       success: (res) => {
         if (res.confirm) {
           const rawData = app.globalData.ledgerData;
+          rawData.deletedTxIds = rawData.deletedTxIds || [];
+          if (!rawData.deletedTxIds.includes(id)) rawData.deletedTxIds.push(id);
           rawData.transactions[role] = (rawData.transactions[role] || []).filter((t) => t.id !== id);
           app.saveLedgerData(rawData);
           this.refreshReport();
@@ -602,6 +661,10 @@ Page({
     }
   },
 
+  toggleCardRecorded() {
+    this.setData({ 'cardForm.recordedInLedger': !this.data.cardForm.recordedInLedger });
+  },
+
   submitMemberCard() {
     const cf = this.data.cardForm;
     const cleanName = (cf.name || '').trim();
@@ -623,6 +686,7 @@ Page({
       remainingValue: Engine.round2(totalVal),
       openDate: cf.openDate || Engine.getTodayDateStr(),
       expiryDate: cf.expiryDate || '',
+      recordedInLedger: !!cf.recordedInLedger,
       note: (cf.note || '').trim(),
       archived: false,
       updatedAt: new Date().toISOString(),
@@ -634,6 +698,7 @@ Page({
       'cardForm.name': '',
       'cardForm.price': '',
       'cardForm.totalValue': '',
+      'cardForm.recordedInLedger': false,
       'cardForm.note': ''
     });
     this.refreshReport();
