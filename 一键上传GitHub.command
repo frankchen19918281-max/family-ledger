@@ -49,7 +49,7 @@ if [[ -f "shared/engine.js" && -d "miniprogram/utils" ]]; then
 fi
 
 # 2. 检查是否有文件改动
-CHANGES="$(git status --porcelain)"
+CHANGES="$(git --no-optional-locks status --porcelain)" || exit 1
 if [[ -z "$CHANGES" ]]; then
   echo ""
   echo "✅ 当前本地没有新的改动需要提交，检查是否有未推送的提交..."
