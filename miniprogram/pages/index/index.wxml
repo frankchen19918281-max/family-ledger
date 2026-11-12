@@ -472,7 +472,6 @@
       <view class="card-sub">c 和 q 设置相同的家庭口令即可共享同一本家庭账</view>
       <input class="input-box" value="{{familyCode}}" bindinput="onFamilyCodeInput" />
       <button class="submit-btn" bindtap="saveFamilyCode">保存并立即同步</button>
-      <button class="reset-btn" bindtap="resetToInitial">🔄 重置为 Excel 初始数据</button>
     </block>
   </view>
 </block>

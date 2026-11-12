@@ -2069,7 +2069,7 @@
             </div>
             <div style="margin-bottom:10px;">
               <button type="button" class="btn-secondary" style="width:100%;border-color:#99f6e4;background:#f0fdfa;color:#0f766e;" data-action="restoreCloudSnapshot">
-                🕰️ 从云端月度自动备份快照恢复（防误删/防误重置保护）
+                🕰️ 从云端月度自动备份快照恢复（防误删历史保护）
               </button>
             </div>
           `
@@ -2091,11 +2091,6 @@
           </div>
           <div style="margin-top:10px;">
             <button class="btn-secondary" style="width:100%;" data-action="importJson">📥 导入 JSON 账本恢复</button>
-          </div>
-          <div style="margin-top:12px;">
-            <button class="btn-danger-sm" style="width:100%;padding:10px;font-weight:600;" data-action="resetInitial">
-              🔄 重置为原 Excel 初始数据 (重置前自动归档云端快照)
-            </button>
           </div>
         </div>
       `;
@@ -3826,17 +3821,6 @@
           reader.readAsText(file);
         };
         input.click();
-      };
-    });
-
-    main.querySelectorAll('[data-action="resetInitial"]').forEach((btn) => {
-      btn.onclick = () => {
-        if (!confirm('确定要重置为 Excel 初始预置数据吗？系统将先在云端自动保存一份「重置前备份快照」，可在双人同步页随时恢复。')) return;
-        const preResetCopy = JSON.parse(JSON.stringify(state.data));
-        state.data = normalizeLoadedData(JSON.parse(JSON.stringify(Engine.INITIAL_DATA)));
-        saveData(true, { forceOverwrite: true, preResetData: preResetCopy });
-        render();
-        showToast('✅ 已恢复初始账本（重置前数据已自动归档云端快照）');
       };
     });
 

@@ -722,20 +722,5 @@ Page({
         }
       }
     });
-  },
-
-  resetToInitial() {
-    wx.showModal({
-      title: '恢复初始 Excel 数据',
-      content: '确定重置为 2026-2027年度家庭共同记账.xlsx 初始数据吗？',
-      success: (res) => {
-        if (res.confirm) {
-          const fresh = JSON.parse(JSON.stringify(Engine.INITIAL_DATA));
-          app.saveLedgerData(fresh);
-          this.refreshReport();
-          wx.showToast({ title: '已恢复初始数据', icon: 'success' });
-        }
-      }
-    });
   }
 });
